@@ -10,7 +10,7 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b7';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b8';</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -2745,11 +2745,10 @@ function classQrPrintSlotKey(classRow) {
   return 'lbl:' + normClassLabelKey(canonicalMainClassDisplayName(classRow) || classRow?.name || '');
 }
 
-/** qrcodejs — олон QR зэрэг үүсгэхэд canvas зөвхөн нэг div-д очдог алдааг засна */
-function renderQrCodeToElement(container, text, size) {
-  if (!container || !window.QRCode || !text) return false;
+/** qrcodejs — PNG data URL (Word, хэвлэх) */
+function qrCodeToDataUrl(text, size) {
+  if (!window.QRCode || !text) return '';
   const px = Number(size) || 128;
-  container.innerHTML = '';
   const tmp = document.createElement('div');
   tmp.setAttribute('aria-hidden', 'true');
   tmp.style.cssText = 'position:fixed;left:-20000px;top:0;width:' + px + 'px;height:' + px + 'px;overflow:hidden;';
@@ -2764,36 +2763,104 @@ function renderQrCodeToElement(container, text, size) {
       correctLevel: window.QRCode.CorrectLevel.M,
     });
     const canvas = tmp.querySelector('canvas');
-    if (canvas) {
-      const img = document.createElement('img');
-      img.src = canvas.toDataURL('image/png');
-      img.width = px;
-      img.height = px;
-      img.alt = 'QR';
-      img.style.display = 'block';
-      img.style.width = px + 'px';
-      img.style.height = px + 'px';
-      container.appendChild(img);
-      return true;
-    }
+    if (canvas) return canvas.toDataURL('image/png');
     const libImg = tmp.querySelector('img');
-    if (libImg && libImg.src) {
-      const img = document.createElement('img');
-      img.src = libImg.src;
-      img.width = px;
-      img.height = px;
-      img.alt = 'QR';
-      img.style.display = 'block';
-      img.style.width = px + 'px';
-      img.style.height = px + 'px';
-      container.appendChild(img);
-      return true;
-    }
+    if (libImg && libImg.src) return libImg.src;
   } catch (_) {}
   finally {
     if (tmp.parentNode) tmp.parentNode.removeChild(tmp);
   }
-  return false;
+  return '';
+}
+
+function renderQrCodeToElement(container, text, size) {
+  if (!container) return false;
+  const px = Number(size) || 128;
+  const dataUrl = qrCodeToDataUrl(text, px);
+  if (!dataUrl) return false;
+  container.innerHTML = '';
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  img.width = px;
+  img.height = px;
+  img.alt = 'QR';
+  img.style.display = 'block';
+  img.style.width = px + 'px';
+  img.style.height = px + 'px';
+  container.appendChild(img);
+  return true;
+}
+
+/** Ангиудын QR — Word (.doc), A4 босоо, 4/A6 хуудас */
+async function downloadClassQrWordDoc(classList, schoolId, brandName) {
+  const list = dedupeClassesForQrPrint(classList || []);
+  if (!list.length || !window.QRCode) return false;
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const brand = esc(brandName || 'SMARTDUTY');
+  const pages = chunkArrayForPrint(list, 4);
+  const padFour = (chunk) => {
+    const a = chunk.slice();
+    while (a.length < 4) a.push(null);
+    return a;
+  };
+  let pagesHtml = '';
+  for (let pi = 0; pi < pages.length; pi++) {
+    const four = padFour(pages[pi]);
+    const cells = [];
+    for (let i = 0; i < 4; i++) {
+      const c = four[i];
+      if (!c) {
+        cells.push('<td class="qr-cell qr-empty">&nbsp;</td>');
+        continue;
+      }
+      const label = esc(canonicalMainClassDisplayName(c) || c.name);
+      const qrUrl = buildClassQrWebUrl(c, schoolId);
+      const dataUrl = qrCodeToDataUrl(qrUrl, 260);
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      cells.push(
+        '<td class="qr-cell">'
+        + '<p class="qr-brand">' + brand + '</p>'
+        + '<p class="qr-class">' + label + '</p>'
+        + (dataUrl
+          ? '<p class="qr-img-wrap"><img src="' + dataUrl + '" width="200" height="200" alt="QR" /></p>'
+          : '<p class="qr-miss">QR</p>')
+        + '<p class="qr-hint">Багш утасны QR уншуулагчоор уншуулж,<br/>нууц үгээр нэвтэрнэ</p>'
+        + '</td>'
+      );
+    }
+    const br = pi < pages.length - 1 ? ' qr-page-break' : '';
+    pagesHtml += '<div class="qr-page' + br + '"><table class="qr-grid" cellspacing="0" cellpadding="0"><tr>'
+      + cells[0] + cells[1] + '</tr><tr>' + cells[2] + cells[3] + '</tr></table></div>';
+  }
+  const html = '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" '
+    + 'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">'
+    + '<head><meta charset="utf-8"><title>Ангиудын QR</title>'
+    + '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->'
+    + '<style>'
+    + '@page WordSection1 { size: 21cm 29.7cm; margin: 0; mso-page-orientation: portrait; }'
+    + 'div.WordSection1 { page: WordSection1; }'
+    + '.qr-page { width: 21cm; height: 29.7cm; margin: 0; padding: 0; }'
+    + '.qr-page-break { page-break-after: always; }'
+    + '.qr-grid { width: 21cm; height: 29.7cm; border-collapse: collapse; table-layout: fixed; }'
+    + '.qr-cell { width: 10.5cm; height: 14.85cm; vertical-align: middle; text-align: center; '
+    + 'border: 1pt dashed #cbd5e1; padding: 10pt 8pt; box-sizing: border-box; }'
+    + '.qr-empty { border-color: #f1f5f9; }'
+    + '.qr-brand { font-family: Arial, sans-serif; font-size: 9pt; font-weight: bold; color: #64748b; margin: 0 0 6pt; }'
+    + '.qr-class { font-family: Arial, sans-serif; font-size: 22pt; font-weight: bold; color: #1e293b; margin: 0 0 8pt; }'
+    + '.qr-img-wrap { margin: 6pt 0; }'
+    + '.qr-hint { font-family: Arial, sans-serif; font-size: 8.5pt; color: #475569; margin: 8pt 0 0; line-height: 1.35; }'
+    + '</style></head><body><div class="WordSection1">' + pagesHtml + '</div></body></html>';
+  const blob = new Blob(['\ufeff', html], { type: 'application/msword;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeBrand = String(brandName || 'SMARTDUTY').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 40);
+  a.href = url;
+  a.download = 'Ангиудын_QR_' + safeBrand + '_' + todayStr() + '.doc';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return true;
 }
 
 function dedupeClassesForQrPrint(classList) {
@@ -12194,6 +12261,24 @@ function ClassQRPage({ user }) {
     }, 600);
   };
 
+  const [qrWordLoading, setQrWordLoading] = React.useState(false);
+
+  const handleDownloadAllQrWord = async () => {
+    if (!qrClassesForPrint.length) {
+      alert('Татах QR байхгүй. Эхлээд хичээлийн хуваарь нийтлэнэ үү.');
+      return;
+    }
+    setQrWordLoading(true);
+    try {
+      const ok = await downloadClassQrWordDoc(qrClassesForPrint, schoolId, printBrand);
+      if (!ok) alert('Word файл үүсгэхэд алдаа гарлаа. QR сан ачаалагдсан эсэхийг шалгана уу.');
+    } catch (e) {
+      alert('Word татахад алдаа: ' + (e && e.message ? e.message : e));
+    } finally {
+      setQrWordLoading(false);
+    }
+  };
+
   const handlePrintAllQr = async () => {
     if (!qrClassesForPrint.length) {
       alert('Хэвлэх QR байхгүй. Эхлээд хичээлийн хуваарь нийтлэнэ үү.');
@@ -12296,6 +12381,17 @@ function ClassQRPage({ user }) {
                 display:'inline-flex',alignItems:'center',gap:8,
               }}>
               🖨️ Бүх QR хэвлэх
+            </button>
+            <button type="button" onClick={handleDownloadAllQrWord} disabled={qrWordLoading}
+              style={{
+                padding:'11px 18px',borderRadius:12,border:'none',cursor: qrWordLoading ? 'wait' : 'pointer',
+                background: qrWordLoading ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
+                color:'#fff',fontWeight:800,fontSize:14,
+                boxShadow:'0 4px 14px rgba(22,163,74,0.3)',
+                display:'inline-flex',alignItems:'center',gap:8,
+                opacity: qrWordLoading ? 0.85 : 1,
+              }}>
+              {qrWordLoading ? '⏳ Бэлтгэж байна...' : '📥 Word татах'}
             </button>
             <span style={{fontSize:12,color:'#64748b',lineHeight:1.45}}>
               A4 цаас (босоо) · нэг хуудсанд <strong>4</strong> QR (A6) · нийт <strong>{qrClassesForPrint.length}</strong> анги · <strong>{qrPrintPages.length}</strong> хуудас
