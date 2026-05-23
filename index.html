@@ -9,6 +9,8 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
+    <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b2';</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -3571,6 +3573,9 @@ function LoginPage({ onLogin }) {
               <div style={{fontSize:22,color:'#0f766e'}}>›</div>
             </button>
           </div>
+          <p style={{textAlign:'center',marginTop:20,fontSize:11,color:'rgba(255,255,255,0.45)'}}>
+            Хувилбар: {typeof window !== 'undefined' && window.__SMARTDUTY_BUILD ? window.__SMARTDUTY_BUILD : '—'}
+          </p>
         </div>
       </div>
     );
