@@ -1111,6 +1111,22 @@ function clearSchoolScopedLocalCache() {
   });
 }
 
+/** Зөвхөн өөр сургууль руу шилжихэд cache устгана — ижил сургууль дахин нэвтрэхэд шууд харагдана */
+function clearSchoolCacheIfSchoolChanged(newSchoolId) {
+  const prev = String(schoolIdHelpers.load() || getCurrentSchoolId() || '').trim();
+  const next = String(newSchoolId || '').trim();
+  if (prev && next && prev !== next) clearSchoolScopedLocalCache();
+}
+
+/** Нэвтрэхийг хүлээлгэхгүй — ард Firebase-ээс нэг удаа татна */
+function runSchoolHydrateInBackground(schoolId, options) {
+  const sid = String(schoolId || getCurrentSchoolId() || '').trim();
+  if (!sid) return;
+  hydrateSchoolFirestoreData(sid, { ...(options || {}), full: false }).catch((e) => {
+    console.warn('[hydrate:bg]', sid, e);
+  });
+}
+
 /** Браузер дээрх бүх SmartDUTY cache (шинэ Firebase руу шилжихэд) */
 function clearAllLocalSmartDutyData() {
   clearSchoolScopedLocalCache();
@@ -1289,10 +1305,13 @@ async function wipeAllSmartDutyFirestoreData(opts) {
 }
 
 /**
- * Firebase schools/{schoolId}/irts_data/* бүх баримтыг татаж localStorage + UI-д оруулна.
- * Хуучин root irts_data/{key} байвал school руу нүүлгэнэ.
+ * Firebase schools/{schoolId}/irts_data/* → localStorage + UI.
+ * full:false (default) — нэг collection.get() (хурдан нэвтрэх).
+ * full:true — түлхүүр бүр + хуучин root irts_data шилжүүлэлт (экспорт).
  */
-async function hydrateSchoolFirestoreData(schoolId) {
+async function hydrateSchoolFirestoreData(schoolId, options) {
+  const opts = options || {};
+  const full = opts.full === true;
   const sid = String(schoolId || getCurrentSchoolId() || '').trim();
   if (!sid) return { loaded: 0, migrated: 0 };
   const db2 = (window.__firebaseCompat || (typeof firebase !== 'undefined' ? firebase : null))?.firestore?.();
@@ -1325,45 +1344,47 @@ async function hydrateSchoolFirestoreData(schoolId) {
     }
   }
 
-  for (const key of IRTS_KNOWN_DATA_KEYS) {
-    if (seen.has(key)) continue;
-    try {
-      let schoolVal = undefined;
-      if (db2) {
-        const sSnap = await db2.collection('schools').doc(sid).collection('irts_data').doc(key).get();
-        if (sSnap.exists) schoolVal = sSnap.data()?.value;
-      } else if (modularDb) {
-        const { doc, getDoc } = getFS();
-        const sSnap = await getDoc(doc(modularDb, 'schools', sid, 'irts_data', key));
-        if (snapExists(sSnap)) schoolVal = sSnap.data()?.value;
-      }
-      if (schoolVal !== undefined) {
-        if (ingest(key, { value: schoolVal })) loaded++;
-        continue;
-      }
+  if (full) {
+    for (const key of IRTS_KNOWN_DATA_KEYS) {
+      if (seen.has(key)) continue;
+      try {
+        let schoolVal = undefined;
+        if (db2) {
+          const sSnap = await db2.collection('schools').doc(sid).collection('irts_data').doc(key).get();
+          if (sSnap.exists) schoolVal = sSnap.data()?.value;
+        } else if (modularDb) {
+          const { doc, getDoc } = getFS();
+          const sSnap = await getDoc(doc(modularDb, 'schools', sid, 'irts_data', key));
+          if (snapExists(sSnap)) schoolVal = sSnap.data()?.value;
+        }
+        if (schoolVal !== undefined) {
+          if (ingest(key, { value: schoolVal })) loaded++;
+          continue;
+        }
 
-      let legacyVal = undefined;
-      if (db2) {
-        const legSnap = await db2.collection('irts_data').doc(key).get();
-        if (legSnap.exists) legacyVal = legSnap.data()?.value;
-      } else if (modularDb) {
-        const { doc, getDoc } = getFS();
-        const legSnap = await getDoc(doc(modularDb, 'irts_data', key));
-        if (snapExists(legSnap)) legacyVal = legSnap.data()?.value;
+        let legacyVal = undefined;
+        if (db2) {
+          const legSnap = await db2.collection('irts_data').doc(key).get();
+          if (legSnap.exists) legacyVal = legSnap.data()?.value;
+        } else if (modularDb) {
+          const { doc, getDoc } = getFS();
+          const legSnap = await getDoc(doc(modularDb, 'irts_data', key));
+          if (snapExists(legSnap)) legacyVal = legSnap.data()?.value;
+        }
+        if (legacyVal !== undefined) {
+          await fsSet(key, legacyVal, sid);
+          if (ingest(key, { value: legacyVal })) { loaded++; migrated++; }
+        }
+      } catch (e) {
+        console.warn('[hydrate] key', key, e);
       }
-      if (legacyVal !== undefined) {
-        await fsSet(key, legacyVal, sid);
-        if (ingest(key, { value: legacyVal })) { loaded++; migrated++; }
-      }
-    } catch (e) {
-      console.warn('[hydrate] key', key, e);
     }
   }
 
   try {
-    window.dispatchEvent(new CustomEvent('irts-school-data-ready', { detail: { schoolId: sid, loaded, migrated } }));
+    window.dispatchEvent(new CustomEvent('irts-school-data-ready', { detail: { schoolId: sid, loaded, migrated, full } }));
   } catch (_) {}
-  console.log('[hydrate]', sid, '→', loaded, 'түлхүүр,', migrated, 'legacy шилжүүлсэн');
+  console.log('[hydrate]', sid, full ? 'FULL' : 'quick', '→', loaded, 'түлхүүр', migrated ? `(${migrated} legacy)` : '');
   return { loaded, migrated };
 }
 
@@ -1424,7 +1445,7 @@ async function fetchAllSchoolIrtsData(schoolId, options = {}) {
   const sid = String(schoolId || getCurrentSchoolId() || '').trim();
   if (!sid) throw new Error('schoolId олдсонгүй — эхлээд нэвтэрнэ үү');
   if (options.hydrateFirst !== false) {
-    try { await hydrateSchoolFirestoreData(sid); } catch (e) { console.warn('[export] hydrate', e); }
+    try { await hydrateSchoolFirestoreData(sid, { full: true }); } catch (e) { console.warn('[export] hydrate', e); }
   }
   const data = {};
   const meta = {};
@@ -1722,6 +1743,22 @@ function normClassLabelKey(name) {
   return base.split('').map((ch) => map[ch] || ch).join('');
 }
 
+/** Хуваарийн нүх (10б, 7а - Математик гэх мэт) ↔ ангийн мөр таарч байгаа эсэх */
+function scheduleCellMatchesClass(scheduleVal, classRow) {
+  const val = String(scheduleVal || '').trim();
+  if (!val || !classRow) return false;
+  const classKey = normClassLabelKey(classRow.name);
+  const valKey = normClassLabelKey(val);
+  if (classKey && valKey && classKey === valKey) return true;
+  const valTok = classNameFirstToken(val);
+  if (classKey && normClassLabelKey(valTok) === classKey) return true;
+  const norm = (s) => String(s || '').toLowerCase().replace(/[\s\-\.]/g, '');
+  if (norm(valTok) === norm(classRow.name)) return true;
+  if (norm(val) === norm(classRow.name)) return true;
+  if (normClassKey(valTok) === normClassKey(classRow.name)) return true;
+  return false;
+}
+
 /**
  * Нэг "үндсэн" ангийн нэр тутамд нэг class бичлэг сонгоно (давхар өрөө олон бол нэг).
  * preferredIds: хуваарь/багшийн classId — таарах бол тэр id-г давуулах.
@@ -1857,15 +1894,51 @@ function loadTeacherLoginAccounts() {
   } catch (_) { return []; }
 }
 
-function saveTeacherLoginAccounts(list) {
-  try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(list)); } catch (_) {}
-  try { fsSet(TEACHER_LOGIN_LS, list); } catch (_) {}
+function mergeTeacherLoginAccountLists(localList, remoteList) {
+  const out = [...(Array.isArray(localList) ? localList : [])];
+  (Array.isArray(remoteList) ? remoteList : []).forEach((remote) => {
+    if (!remote || !remote.loginName) return;
+    const idx = out.findIndex((a) => scheduleNamesMatch(a.loginName, remote.loginName));
+    if (idx >= 0) {
+      const localT = Date.parse(out[idx].updatedAt || '') || 0;
+      const remoteT = Date.parse(remote.updatedAt || '') || 0;
+      out[idx] = remoteT >= localT ? { ...out[idx], ...remote } : { ...remote, ...out[idx] };
+    } else {
+      out.push(remote);
+    }
+  });
+  return out;
 }
 
-function upsertTeacherLoginAccount(cardName, password, extra) {
+/** Firestore + localStorage — багшийн нууц үгийн жагсаалт (нэвтрэхээс өмнө дуудна) */
+async function ensureTeacherLoginAccountsLoaded() {
+  let local = loadTeacherLoginAccounts();
+  try {
+    const fromFs = await fsGet(TEACHER_LOGIN_LS, null);
+    if (Array.isArray(fromFs)) {
+      local = mergeTeacherLoginAccountLists(local, fromFs);
+      try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local)); } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('[teacher-login] Firestore load', e);
+  }
+  return local;
+}
+
+async function saveTeacherLoginAccounts(list) {
+  const arr = Array.isArray(list) ? list : [];
+  try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(arr)); } catch (_) {}
+  await fsSet(TEACHER_LOGIN_LS, arr);
+  return arr;
+}
+
+async function upsertTeacherLoginAccount(cardName, password, extra) {
   const name = String(cardName || '').trim();
   const pw = String(password || '').trim();
-  if (!name || pw.length < 6) return;
+  if (!name || pw.length < 6) {
+    throw new Error('Нууц үг дор хаяж 6 тэмдэгт байх ёстой');
+  }
+  await ensureTeacherLoginAccountsLoaded();
   const list = loadTeacherLoginAccounts();
   const idx = list.findIndex((a) => scheduleNamesMatch(a.loginName, name));
   const row = {
@@ -1878,17 +1951,18 @@ function upsertTeacherLoginAccount(cardName, password, extra) {
   };
   if (idx >= 0) list[idx] = { ...list[idx], ...row };
   else list.push({ id: 'tlog_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), ...row });
-  saveTeacherLoginAccounts(list);
+  await saveTeacherLoginAccounts(list);
+  return row;
 }
 
-function syncTeacherLoginsFromPwDrafts(teachers, pwDrafts) {
-  (teachers || []).forEach((t) => {
+async function syncTeacherLoginsFromPwDrafts(teachers, pwDrafts) {
+  for (const t of (teachers || [])) {
     const key = (t.name || '').trim();
     const pw = String((pwDrafts && pwDrafts[key]) || '').trim();
     if (pw.length >= 6) {
-      upsertTeacherLoginAccount(key, pw, { subject: t.subject, homeroom: t.homeroom });
+      await upsertTeacherLoginAccount(key, pw, { subject: t.subject, homeroom: t.homeroom });
     }
-  });
+  }
 }
 
 function collectScheduleClassLabelKeys(publishedHuwiari) {
@@ -1925,6 +1999,70 @@ function getTeacherScheduleClassKeys(teacherName, publishedHuwiari) {
   return keys;
 }
 
+/** Хуваариас багшийн заадаг ангийн нэрсийг (давхардалгүй) цуглуулна */
+function getPublishedHuwiariLocal() {
+  try {
+    const v = JSON.parse(localStorage.getItem('irts_published_huwiari') || 'null');
+    return v && typeof v === 'object' ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** QR анги + нууц үг → тухайн ангид заадаг багшийн бүртгэл */
+async function findTeacherAccountsForQrClass(className, password) {
+  const pw = String(password || '').trim();
+  const cls = String(className || '').trim();
+  if (!cls || pw.length < 6) return [];
+  let published = getPublishedHuwiariLocal();
+  let accounts = loadTeacherLoginAccounts();
+  const filterMatches = () => accounts.filter((a) =>
+    String(a.password) === pw && teacherTeachesClassName(a.loginName, cls, published)
+  );
+  let matches = filterMatches();
+  if (!matches.length) {
+    accounts = await ensureTeacherLoginAccountsLoaded();
+    if (!published) {
+      try {
+        const fromFs = await fsGet('irts_published_huwiari', null);
+        if (fromFs) published = fromFs;
+      } catch (_) {}
+    }
+    matches = filterMatches();
+  }
+  return matches;
+}
+
+function getTeacherScheduleClassLabels(teacherName, publishedHuwiari) {
+  const byKey = new Map();
+  if (!teacherName || !publishedHuwiari?.teachers) return [];
+  const t = publishedHuwiari.teachers.find((te) => scheduleNamesMatch(te.name, teacherName));
+  if (!t) return [];
+
+  const addRaw = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s) return;
+    const k = normClassLabelKey(s);
+    const display = canonicalMainClassDisplayName({ name: s }) || s;
+    if (!byKey.has(k) || display.length > (byKey.get(k) || '').length) {
+      byKey.set(k, display);
+    }
+  };
+
+  addRaw(t.homeroom);
+  SCHEDULE_DAYS_K.forEach((day) => {
+    SCHEDULE_SHIFTS_K.forEach((shift) => {
+      for (let p = 1; p <= 7; p++) {
+        addRaw(t.schedule?.[day]?.[shift]?.[p]?.val);
+      }
+    });
+  });
+
+  return [...byKey.values()].sort((a, b) =>
+    String(a).localeCompare(String(b), 'mn', { numeric: true, sensitivity: 'base' })
+  );
+}
+
 function teacherTeachesClassName(teacherName, className, publishedHuwiari) {
   if (!teacherName || !className) return false;
   const want = normClassLabelKey(className);
@@ -1951,6 +2089,8 @@ function readTeacherQrClassContext() {
 
 function applyTeacherQrPayload(payload) {
   if (!payload || !payload.className) return;
+  const sid = String(payload.schoolId || '').trim();
+  if (sid) setCurrentSchoolId(schoolIdHelpers.toSlug(sid) || sid);
   try { sessionStorage.setItem(TEACHER_QR_CLASS_SS, JSON.stringify(payload)); } catch (_) {}
 }
 
@@ -2539,22 +2679,44 @@ function MapPickerWidget({ onSelect, initialLocation, radius }) {
 // LOGIN PAGE — 2 тусдаанэвтрэх хэсэг
 // ════════════════════════════════════════════
 function LoginPage({ onLogin }) {
-  const [portal,    setPortal]    = React.useState('portal');
+  const [portal, setPortal] = React.useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('portal') === 'teacher' || params.get('qr')) return 'teacher';
+    } catch (_) {}
+    return 'portal';
+  });
 
   const [qrLoginClass, setQrLoginClass] = React.useState('');
+  const [qrTeacherNames, setQrTeacherNames] = React.useState([]);
+  const [qrMatchedTeacher, setQrMatchedTeacher] = React.useState(null);
+  const [qrMatchCandidates, setQrMatchCandidates] = React.useState([]);
+  const [qrMatchLoading, setQrMatchLoading] = React.useState(false);
+
   React.useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('portal') === 'teacher') setPortal('teacher');
+      if (params.get('portal') === 'teacher' || params.get('qr')) setPortal('teacher');
       const qr = params.get('qr');
       if (qr) {
         try { applyTeacherQrPayload(JSON.parse(decodeURIComponent(qr))); }
         catch (_) { try { applyTeacherQrPayload(JSON.parse(qr)); } catch (_2) {} }
       }
       const ctx = readTeacherQrClassContext();
-      if (ctx?.className) setQrLoginClass(String(ctx.className));
+      if (ctx?.className) {
+        setQrLoginClass(String(ctx.className));
+        const published = getPublishedHuwiariLocal();
+        if (published?.teachers?.length) {
+          const names = published.teachers
+            .filter((t) => teacherTeachesClassName(t.name, ctx.className, published))
+            .map((t) => t.name)
+            .filter(Boolean);
+          setQrTeacherNames(names);
+        }
+      }
     } catch (_) {}
   }, []);
+
   const [mode,      setMode]      = React.useState('login');
   const [email,     setEmail]     = React.useState('');
   const [password,  setPassword]  = React.useState('');
@@ -2572,6 +2734,40 @@ function LoginPage({ onLogin }) {
   const [info,      setInfo]      = React.useState('');
   const [loading,   setLoading]   = React.useState(false);
   const [showResend,setShowResend]= React.useState(false);
+
+  const isQrClassLogin = portal === 'teacher' && !!qrLoginClass;
+  const qrClassDisplay = React.useMemo(() => {
+    if (!qrLoginClass) return '';
+    return canonicalMainClassDisplayName({ name: qrLoginClass }) || qrLoginClass;
+  }, [qrLoginClass]);
+
+  React.useEffect(() => {
+    if (!isQrClassLogin || mode !== 'login') return;
+    const pw = String(password || '').trim();
+    if (pw.length < 6) {
+      setQrMatchedTeacher(null);
+      setQrMatchCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setQrMatchLoading(true);
+      try {
+        const matches = await findTeacherAccountsForQrClass(qrLoginClass, pw);
+        if (cancelled) return;
+        setQrMatchCandidates(matches);
+        setQrMatchedTeacher(matches.length === 1 ? matches[0] : null);
+      } catch (_) {
+        if (!cancelled) {
+          setQrMatchedTeacher(null);
+          setQrMatchCandidates([]);
+        }
+      } finally {
+        if (!cancelled) setQrMatchLoading(false);
+      }
+    }, 280);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [password, qrLoginClass, mode, isQrClassLogin]);
 
   const getAuthV8 = () => {
     if (window.__firebaseAuth) return window.__firebaseAuth;
@@ -2601,41 +2797,88 @@ function LoginPage({ onLogin }) {
     return null;
   };
 
+  const finishTeacherLogin = async (found) => {
+    if (!found) return;
+    const published = getPublishedHuwiariLocal();
+    const sched = (published?.teachers || []).find((t) => scheduleNamesMatch(t.name, found.loginName));
+    const qrCtx = readTeacherQrClassContext();
+    if (qrCtx?.className && published?.teachers?.length) {
+      const canTeach = teacherTeachesClassName(found.loginName, qrCtx.className, published);
+      if (!canTeach) {
+        setError('⚠️ Та «' + qrCtx.className + '» ангид хичээл заадаггүй тул энэ QR-аар нэвтрэх боломжгүй.');
+        return;
+      }
+    }
+    const schoolId = (qrCtx?.schoolId ? (schoolIdHelpers.toSlug(qrCtx.schoolId) || String(qrCtx.schoolId).trim()) : '')
+      || schoolIdHelpers.load()
+      || 'default_school';
+    setCurrentSchoolId(schoolId);
+    clearSchoolCacheIfSchoolChanged(schoolId);
+    const displayName = found.displayName || found.loginName;
+    onLogin({
+      uid: found.id || ('local_' + found.loginName),
+      name: displayName,
+      loginName: found.loginName,
+      role: 'teacher',
+      schoolId,
+      classId: 'no_class',
+      subject: found.subject || sched?.subject || '',
+      email: found.email || '',
+      authMode: 'local_password',
+    });
+    runSchoolHydrateInBackground(schoolId);
+    setInfo('');
+  };
+
   const teacherLoginByName = async () => {
     const loginName = String(email || '').trim();
     if (!loginName) { setError('Багшийн нэрээ оруулна уу'); return; }
     if (!password) { setError('Нууц үг оруулна уу'); return; }
     setLoading(true);
     try {
-      const accounts = loadTeacherLoginAccounts();
-      const found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password) === String(password));
+      let accounts = loadTeacherLoginAccounts();
+      let found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password) === String(password));
       if (!found) {
-        setError('Багшийн нэр эсвэл нууц үг буруу байна. Удирдлагаас өгсөн нууц үгээ шалгана уу.');
+        accounts = await ensureTeacherLoginAccountsLoaded();
+        found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password) === String(password));
+      }
+      if (!found) {
+        setError('Багшийн нэр эсвэл нууц үг буруу байна.\n\nУдирдлага «Багш нарын бүртгэл»-д нууц үгээ «💾 Хадгалах» дарж хадгалсан эсэхийг шалгана уу.');
         return;
       }
-      let published = null;
-      try { published = JSON.parse(localStorage.getItem('irts_published_huwiari') || 'null'); } catch (_) {}
-      const sched = (published?.teachers || []).find((t) => scheduleNamesMatch(t.name, found.loginName));
-      const schoolId = schoolIdHelpers.load() || 'default_school';
-      setCurrentSchoolId(schoolId);
-      clearSchoolScopedLocalCache();
-      try {
-        setInfo('☁️ Өгөгдөл ачааллаж байна...');
-        await hydrateSchoolFirestoreData(schoolId);
-      } catch (_) {}
-      const displayName = found.displayName || found.loginName;
-      onLogin({
-        uid: found.id || ('local_' + found.loginName),
-        name: displayName,
-        loginName: found.loginName,
-        role: 'teacher',
-        schoolId,
-        classId: 'no_class',
-        subject: found.subject || sched?.subject || '',
-        email: found.email || '',
-        authMode: 'local_password',
-      });
-      setInfo('✅ Тавтай морил, ' + displayName + '!');
+      await finishTeacherLogin(found);
+    } catch (e) {
+      setError('Нэвтрэхэд алдаа: ' + (e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const teacherLoginByQrPassword = async () => {
+    if (!qrLoginClass) { await teacherLoginByName(); return; }
+    if (!password) { setError('Нууц үг оруулна уу'); return; }
+    if (String(password).trim().length < 6) {
+      setError('Нууц үг дор хаяж 6 тэмдэгт');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      let found = qrMatchedTeacher;
+      if (!found) {
+        const matches = await findTeacherAccountsForQrClass(qrLoginClass, password);
+        setQrMatchCandidates(matches);
+        if (matches.length === 1) found = matches[0];
+        else if (matches.length > 1) {
+          setError('Ижил нууц үгтэй ' + matches.length + ' багш олдлоо — доорх нэрээ сонгоно уу.');
+          return;
+        }
+      }
+      if (!found) {
+        setError('Нууц үг буруу эсвэл энэ ангид заадаг багш биш байна.\n\nУдирдлага «Багш нарын бүртгэл»-д нууц үгээ «💾 Хадгалах» дарсан эсэхийг шалгана уу.');
+        return;
+      }
+      await finishTeacherLogin(found);
     } catch (e) {
       setError('Нэвтрэхэд алдаа: ' + (e.message || e));
     } finally {
@@ -2646,7 +2889,8 @@ function LoginPage({ onLogin }) {
   const login = async () => {
     setError(''); setInfo('');
     if (portal === 'teacher') {
-      await teacherLoginByName();
+      if (qrLoginClass) await teacherLoginByQrPassword();
+      else await teacherLoginByName();
       return;
     }
     const domErr = checkDomain(email);
@@ -2711,40 +2955,31 @@ function LoginPage({ onLogin }) {
         userSchoolId = 'default_school';
       }
       setCurrentSchoolId(userSchoolId);
-      clearSchoolScopedLocalCache();
-      try {
-        setInfo('☁️ Firebase-ээс өгөгдөл татаж байна...');
-        const hydr = await hydrateSchoolFirestoreData(userSchoolId);
-        if (hydr.loaded > 0) {
-          setInfo(`✅ ${hydr.loaded} төрлийн өгөгдөл Firebase-ээс ачаалагдлаа${hydr.migrated ? ` (${hydr.migrated} хуучин байршлаас шилжүүлсэн)` : ''}`);
-        } else {
-          setInfo('ℹ️ Firebase-д өгөгдөл олдсонгүй — шинээр бүртгэнэ үү.');
-        }
-      } catch (hydrErr) {
-        console.warn('[LoginPage] hydrate', hydrErr);
-        setInfo('⚠️ Зарим өгөгдөл татахад алдаа гарлаа. Дахин ачаална уу.');
-      }
-      try {
-        const syncData = {...userData, uid: firebaseUser.uid, schoolId: userSchoolId};
-        await ensureSchoolDoc(userSchoolId, userData.schoolName || userSchoolId);
-        const fsApi = typeof getFS === 'function' ? getFS() : null;
-        const dbRef = typeof getDB === 'function' ? getDB() : null;
-        if (fsApi && dbRef && fsApi.doc && fsApi.setDoc) {
-          const { doc: _doc, setDoc: _setDoc } = fsApi;
-          await _setDoc(_doc(dbRef, 'schools', userSchoolId, 'users', firebaseUser.uid), syncData, { merge: true });
-        } else {
-          console.warn('[LoginPage] modular Firestore (getFS/getDB) not ready; skipping school/users merge');
-        }
-      } catch (e) {
-        console.error('[LoginPage] school/users sync error', e);
-      }
+      clearSchoolCacheIfSchoolChanged(userSchoolId);
       try {
         onLogin({...userData, uid: firebaseUser.uid, schoolId: userSchoolId});
       } catch (onErr) {
         console.error('[LoginPage] onLogin / state update failed', onErr);
         setError('Нэвтрэх үед дотоод алдаа гарлаа. Хуудсыг дахин ачаална уу.');
         try { await authApi.signOut(); } catch (_) {}
+        return;
       }
+      setInfo('');
+      runSchoolHydrateInBackground(userSchoolId);
+      const syncData = {...userData, uid: firebaseUser.uid, schoolId: userSchoolId};
+      (async () => {
+        try {
+          await ensureSchoolDoc(userSchoolId, userData.schoolName || userSchoolId);
+          const fsApi = typeof getFS === 'function' ? getFS() : null;
+          const dbRef = typeof getDB === 'function' ? getDB() : null;
+          if (fsApi && dbRef && fsApi.doc && fsApi.setDoc) {
+            const { doc: _doc, setDoc: _setDoc } = fsApi;
+            await _setDoc(_doc(dbRef, 'schools', userSchoolId, 'users', firebaseUser.uid), syncData, { merge: true });
+          }
+        } catch (e) {
+          console.warn('[LoginPage] school/users sync (background)', e);
+        }
+      })();
     } catch (e) {
       console.error('[LoginPage] teacher/admin login error', e);
       const errMsg = (e && typeof e.message === 'string') ? e.message : String(e || 'Unknown error');
@@ -3103,16 +3338,41 @@ function LoginPage({ onLogin }) {
   // ═══ НЭВТРЭХ ХУУДАС ═══
   const isTeacherPortal = portal === 'teacher';
   const pColor = isTeacherPortal ? '#4f46e5' : '#0f766e';
-  const pGrad  = isTeacherPortal ? 'linear-gradient(135deg,#4f46e5,#7c3aed)' : 'linear-gradient(135deg,#0f766e,#059669)';
-  const pBg    = isTeacherPortal ? 'linear-gradient(135deg,#1e1b4b 0%,#4f46e5 50%,#7c3aed 100%)' : 'linear-gradient(135deg,#042f2e 0%,#0f766e 50%,#059669 100%)';
+  const pGrad  = isQrClassLogin
+    ? 'linear-gradient(135deg,#16a34a,#15803d)'
+    : (isTeacherPortal ? 'linear-gradient(135deg,#4f46e5,#7c3aed)' : 'linear-gradient(135deg,#0f766e,#059669)');
+  const pBg    = isQrClassLogin
+    ? 'linear-gradient(160deg,#052e16 0%,#14532d 45%,#166534 100%)'
+    : (isTeacherPortal ? 'linear-gradient(135deg,#1e1b4b 0%,#4f46e5 50%,#7c3aed 100%)' : 'linear-gradient(135deg,#042f2e 0%,#0f766e 50%,#059669 100%)');
+  const qrLoginReady = !!(qrMatchedTeacher && (qrMatchedTeacher.loginName || qrMatchedTeacher.displayName));
 
   return (
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:pBg}}>
       <div style={{width:'100%',maxWidth:400}}>
+        {isQrClassLogin && (
+          <div style={{
+            textAlign:'center',marginBottom:20,padding:'18px 20px',
+            background:'linear-gradient(135deg,#dcfce7,#bbf7d0)',
+            border:'2px solid #86efac',borderRadius:16,
+            boxShadow:'0 8px 32px rgba(22,163,74,0.25)',
+          }}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',letterSpacing:0.5,marginBottom:6}}>
+              📒 Дэг хэрэгжилтийн дэвтэр
+            </div>
+            <div style={{fontSize:40,fontWeight:900,color:'#15803d',lineHeight:1.1,letterSpacing:-0.5}}>
+              {qrClassDisplay}
+            </div>
+            <div style={{fontSize:12,color:'#166534',marginTop:8,opacity:0.9}}>ангийн QR</div>
+          </div>
+        )}
         <div style={{textAlign:'center',marginBottom:24}}>
-          <div style={{fontSize:60,marginBottom:8}}>{isTeacherPortal ? '🧑‍🏫' : '👔'}</div>
-          <h1 style={{fontSize:28,fontWeight:800,color:'#fff',marginBottom:4}}>{isTeacherPortal ? 'Багш нэвтрэх' : 'Удирдлагa нэвтрэх'}</h1>
-          <p style={{color:'rgba(255,255,255,0.7)',fontSize:13}}>{isTeacherPortal ? 'Хуваарийн нэр + удирдлагаас өгсөн нууц үг' : 'Удирдлага нэвтрэх (@moes.edu.mn)'}</p>
+          <div style={{fontSize:60,marginBottom:8}}>{isQrClassLogin ? '📲' : (isTeacherPortal ? '🧑‍🏫' : '👔')}</div>
+          <h1 style={{fontSize:28,fontWeight:800,color:'#fff',marginBottom:4}}>
+            {isQrClassLogin ? 'Багш нэвтрэх' : (isTeacherPortal ? 'Багш нэвтрэх' : 'Удирдлагa нэвтрэх')}
+          </h1>
+          <p style={{color:'rgba(255,255,255,0.7)',fontSize:13}}>
+            {isQrClassLogin ? 'Нууц үгээ оруулаад нэрийгээ шалгана уу' : (isTeacherPortal ? 'Хуваарийн нэр + удирдлагаас өгсөн нууц үг' : 'Удирдлага нэвтрэх (@moes.edu.mn)')}
+          </p>
         </div>
         <div className="card" style={{padding:28}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
@@ -3120,41 +3380,88 @@ function LoginPage({ onLogin }) {
               {mode==='reset' ? '🔒 Нууц үг сэргээх' : mode==='resend' ? '📩 Verify имэйл дахин илгээх' : '🔑 Нэвтрэх'}
             </h2>
             <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,
-              background:isTeacherPortal?'#ede9fe':'#ccfbf1',color:isTeacherPortal?'#5b21b6':'#134e4a'}}>
-              {isTeacherPortal ? '🧑‍🏫 Багш' : '👔 Удирдлага'}
+              background:isQrClassLogin?'#dcfce7':(isTeacherPortal?'#ede9fe':'#ccfbf1'),
+              color:isQrClassLogin?'#15803d':(isTeacherPortal?'#5b21b6':'#134e4a')}}>
+              {isQrClassLogin ? '📲 QR' : (isTeacherPortal ? '🧑‍🏫 Багш' : '👔 Удирдлага')}
             </span>
           </div>
-          {error && <div style={{background:"#fee2e2",border:"1.5px solid #fca5a5",color:"#991b1b",padding:"10px 14px",borderRadius:8,marginBottom:12,fontSize:13}}>{error}</div>}
+          {error && <div style={{background:"#fee2e2",border:"1.5px solid #fca5a5",color:"#991b1b",padding:"10px 14px",borderRadius:8,marginBottom:12,fontSize:13,whiteSpace:'pre-line'}}>{error}</div>}
           {info  && <div style={{background:'#dcfce7',border:'1.5px solid #86efac',color:'#15803d',padding:'10px 14px',borderRadius:8,marginBottom:12,fontSize:13}}>{info}</div>}
-          {isTeacherPortal && qrLoginClass && (
-            <div style={{background:'#eff6ff',border:'1.5px solid #93c5fd',color:'#1e40af',padding:'10px 14px',borderRadius:8,marginBottom:12,fontSize:13,fontWeight:600,lineHeight:1.5}}>
-              📲 <strong>{qrLoginClass}</strong> ангийн QR — нэвтэрсний дараа <strong>Дэг дэвтэр</strong> шууд нээгдэнэ
-            </div>
-          )}
           <div style={{display:'flex',flexDirection:'column',gap:14}}>
-            <div>
-              <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>
-                {isTeacherPortal ? 'Багшийн нэр (хуваарийн нэр)' : (
-                  <>И-мэйл хаяг &nbsp;
-                  <span style={{fontSize:11,fontWeight:700,color:pColor,background:'#ccfbf1',padding:'2px 7px',borderRadius:6}}>@moes.edu.mn</span></>
+            {!isQrClassLogin && (
+              <div>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>
+                  {isTeacherPortal ? 'Багшийн нэр (хуваарийн нэр)' : (
+                    <>И-мэйл хаяг &nbsp;
+                    <span style={{fontSize:11,fontWeight:700,color:pColor,background:'#ccfbf1',padding:'2px 7px',borderRadius:6}}>@moes.edu.mn</span></>
+                  )}
+                </label>
+                <input className="input-field" type={isTeacherPortal ? 'text' : 'email'}
+                  placeholder={isTeacherPortal ? 'Жишээ: Д.Эрдэнэтуяа' : 'name@moes.edu.mn'}
+                  list={isTeacherPortal && qrTeacherNames.length ? 'teacher-schedule-names' : undefined}
+                  value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&mode==='login'&&login()}/>
+                {isTeacherPortal && qrTeacherNames.length > 0 && (
+                  <datalist id="teacher-schedule-names">
+                    {qrTeacherNames.map((n) => <option key={n} value={n} />)}
+                  </datalist>
                 )}
-              </label>
-              <input className="input-field" type={isTeacherPortal ? 'text' : 'email'}
-                placeholder={isTeacherPortal ? 'Жишээ: Д.Эрдэнэтуяа' : 'name@moes.edu.mn'}
-                value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&mode==='login'&&login()}/>
-            </div>
+              </div>
+            )}
             {mode !== 'reset' && (
               <div>
                 <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>Нууц үг</label>
-                <input className="input-field" type="password" placeholder="••••••••"
+                <input className="input-field" type="password" placeholder="••••••••" autoFocus={isQrClassLogin}
                   value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==='Enter'&&login()}/>
               </div>
             )}
+            {isQrClassLogin && mode === 'login' && (
+              <div style={{
+                padding:'12px 14px',borderRadius:10,
+                background: qrLoginReady ? '#f0fdf4' : '#f8fafc',
+                border:'1.5px solid ' + (qrLoginReady ? '#86efac' : '#e2e8f0'),
+                minHeight:52,
+              }}>
+                {qrMatchLoading ? (
+                  <div style={{fontSize:13,color:'#64748b'}}>⏳ Багшийн нэр шалгаж байна...</div>
+                ) : qrLoginReady ? (
+                  <>
+                    <div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:4}}>Та зөв эсэхийг шалгана уу</div>
+                    <div style={{fontSize:17,fontWeight:800,color:'#15803d'}}>
+                      🧑‍🏫 {qrMatchedTeacher.displayName || qrMatchedTeacher.loginName}
+                    </div>
+                  </>
+                ) : String(password||'').trim().length >= 6 ? (
+                  <div style={{fontSize:13,color:'#dc2626'}}>⚠️ Нууц үг таарахгүй эсвэл энэ ангид заадаг багш биш</div>
+                ) : (
+                  <div style={{fontSize:13,color:'#94a3b8'}}>Нууц үг оруулахад багшийн нэр автоматаар гарна</div>
+                )}
+              </div>
+            )}
+            {isQrClassLogin && qrMatchCandidates.length > 1 && mode === 'login' && (
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Багшаа сонгоно уу:</div>
+                {qrMatchCandidates.map((cand) => (
+                  <button
+                    key={cand.id || cand.loginName}
+                    type="button"
+                    onClick={() => setQrMatchedTeacher(cand)}
+                    style={{
+                      padding:'10px 12px',borderRadius:8,textAlign:'left',cursor:'pointer',fontSize:13,fontWeight:700,
+                      border:'2px solid ' + (qrMatchedTeacher?.loginName === cand.loginName ? '#16a34a' : '#e2e8f0'),
+                      background: qrMatchedTeacher?.loginName === cand.loginName ? '#f0fdf4' : '#fff',
+                      color:'#1e293b',
+                    }}
+                  >
+                    {cand.displayName || cand.loginName}
+                  </button>
+                ))}
+              </div>
+            )}
             {mode === 'login' && (
-              <button disabled={loading} onClick={login}
-                style={{padding:'13px',borderRadius:12,border:'none',cursor:'pointer',fontSize:15,fontWeight:700,
-                  background:pGrad,color:'#fff',opacity:loading?0.6:1}}>
-                {loading ? 'Нэвтэрч байна...' : 'Нэвтрэх →'}
+              <button disabled={loading || (isQrClassLogin && !qrLoginReady)} onClick={login}
+                style={{padding:'13px',borderRadius:12,border:'none',cursor:(loading||(isQrClassLogin&&!qrLoginReady))?'not-allowed':'pointer',fontSize:15,fontWeight:700,
+                  background:pGrad,color:'#fff',opacity:(loading||(isQrClassLogin&&!qrLoginReady))?0.5:1}}>
+                {loading ? 'Нэвтэрч байна...' : (isQrClassLogin ? 'Дэг дэвтэр рүү нэвтрэх →' : 'Нэвтрэх →')}
               </button>
             )}
             {mode === 'reset' && (
@@ -3170,7 +3477,7 @@ function LoginPage({ onLogin }) {
                 </button>
               </>
             )}
-            {mode === 'login' && (
+            {mode === 'login' && !isQrClassLogin && (
               <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:4}}>
                 <button onClick={()=>{setMode('reset');setError('');setInfo('');}}
                   style={{padding:'8px',border:'none',cursor:'pointer',fontSize:12,color:'#6b7280',background:'transparent'}}>
@@ -3213,16 +3520,18 @@ function LoginPage({ onLogin }) {
             )}
           </div>
         </div>
-        <div style={{textAlign:'center',marginTop:18}}>
-          <button onClick={()=>{setPortal('portal');resetAll();}}
-            style={{padding:'10px 20px',borderRadius:12,border:'1.5px solid rgba(255,255,255,0.35)',
-              cursor:'pointer',fontSize:13,fontWeight:600,color:'rgba(255,255,255,0.85)',
-              background:'rgba(255,255,255,0.1)',transition:'all 0.2s'}}
-            onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.2)'}
-            onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.1)'}>
-            ←нэвтрэх хэсэг сонгох хуудас руу буцах
-          </button>
-        </div>
+        {!isQrClassLogin && (
+          <div style={{textAlign:'center',marginTop:18}}>
+            <button onClick={()=>{setPortal('portal');resetAll();}}
+              style={{padding:'10px 20px',borderRadius:12,border:'1.5px solid rgba(255,255,255,0.35)',
+                cursor:'pointer',fontSize:13,fontWeight:600,color:'rgba(255,255,255,0.85)',
+                background:'rgba(255,255,255,0.1)',transition:'all 0.2s'}}
+              onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.2)'}
+              onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.1)'}>
+              ←нэвтрэх хэсэг сонгох хуудас руу буцах
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -6886,32 +7195,23 @@ function SearchPage({ user }) {
 
   // Admin бол бүх ангийг харна, багш бол өөрийн ангиудыг харна
   const isAdmin = user.role === 'admin';
+  const teacherLoginName = user?.loginName || user?.name || '';
 
   const rawTeacherClassIds = useMemo(() => {
     if (isAdmin) return allClasses.map(c => c.id);
-    const norm = s => (s||'').toLowerCase().replace(/\s+/g,'');
     const ids = new Set();
     if (user.classId && user.classId !== 'no_class') ids.add(user.classId);
-    if (publishedHuwiari?.teachers) {
-      const tEntry = publishedHuwiari.teachers.find(t => scheduleNamesMatch(t.name, teacherLoginName));
-      if (tEntry?.schedule) {
-        const DAYS_K = ['ДАВАА','МЯГМАР','ЛХАГВА','ПҮРЭВ','БААСАН'];
-        const SHIFTS = ['I ээлж','II ээлж'];
-        DAYS_K.forEach(day => {
-          SHIFTS.forEach(shift => {
-            for (let p=1; p<=7; p++) {
-              const val = (tEntry.schedule[day]?.[shift]?.[p]?.val || '').trim();
-              if (val) {
-                const cls = classes.find(c => norm(c.name) === norm(val));
-                if (cls) ids.add(cls.id);
-              }
-            }
-          });
-        });
-      }
+    const schedKeys = getTeacherScheduleClassKeys(teacherLoginName, publishedHuwiari);
+    allClasses.forEach((c) => {
+      if (schedKeys.has(normClassLabelKey(c?.name))) ids.add(c.id);
+    });
+    const qrCtx = readTeacherQrClassContext();
+    if (qrCtx?.className) {
+      const found = findClassRowByLabel(qrCtx.className, allClasses);
+      if (found?.id) ids.add(found.id);
     }
     return [...ids];
-  }, [user, publishedHuwiari, classes, isAdmin, allClasses]);
+  }, [user, publishedHuwiari, allClasses, isAdmin, teacherLoginName]);
 
   // Зөвхөн SMARTDUTY_MAIN_CLASS_LABELS-д байгаа үндсэн ангиуд (давхар өрөөг нэг товч болгоно)
   const teacherClasses = useMemo(() => {
@@ -10887,6 +11187,7 @@ function StudentListModal({ sub, onClose }) {
 function ClassQRPage({ user }) {
   const [allClasses] = useLS('irts_classes', []);
   const [publishedLesson] = useLS('irts_published_huwiari', null);
+  const [classSearch, setClassSearch] = React.useState('');
   const qrRefs = React.useRef({});
   const schoolId = React.useMemo(() => {
     try { return schoolIdHelpers.toSlug(user?.schoolId || getCurrentSchoolId() || 'default_school'); }
@@ -10901,10 +11202,24 @@ function ClassQRPage({ user }) {
     return filtered.length ? filtered : mainList;
   }, [allClasses, publishedLesson]);
 
+  const filteredQrClasses = React.useMemo(() => {
+    const q = String(classSearch || '').trim();
+    if (!q) return qrClasses;
+    const qNorm = normClassLabelKey(q);
+    const qLower = q.toLowerCase();
+    return qrClasses.filter((c) => {
+      const label = canonicalMainClassDisplayName(c) || c.name || '';
+      const labelNorm = normClassLabelKey(label);
+      const labelLower = String(label).toLowerCase();
+      return labelNorm.includes(qNorm) || labelLower.includes(qLower)
+        || String(c.name || '').toLowerCase().includes(qLower);
+    });
+  }, [qrClasses, classSearch]);
+
   React.useEffect(() => {
     if (!window.QRCode) return;
     const t = setTimeout(() => {
-      qrClasses.forEach((c) => {
+      filteredQrClasses.forEach((c) => {
         const el = qrRefs.current[c.id];
         if (!el) return;
         const url = buildClassQrWebUrl(c, schoolId);
@@ -10913,7 +11228,7 @@ function ClassQRPage({ user }) {
       });
     }, 80);
     return () => clearTimeout(t);
-  }, [qrClasses, schoolId]);
+  }, [filteredQrClasses, schoolId]);
 
   const copyLink = (c) => {
     const url = buildClassQrWebUrl(c, schoolId);
@@ -10934,6 +11249,38 @@ function ClassQRPage({ user }) {
         <p style={{color:'#94a3b8',fontSize:12,marginTop:8}}>
           Жишээ: 10б ангийн QR → зөвхөн 10б-д хичээл заадаг багш нэвтэрнэ.
         </p>
+        {qrClasses.length > 0 && (
+          <div style={{marginTop:16,maxWidth:420}}>
+            <div style={{position:'relative'}}>
+              <span style={{position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',fontSize:15,pointerEvents:'none'}}>🔍</span>
+              <input
+                type="search"
+                className="input-field"
+                placeholder="Анги хайх (жишээ: 10б, 11а)..."
+                value={classSearch}
+                onChange={(e) => setClassSearch(e.target.value)}
+                style={{margin:0,padding:'10px 12px 10px 38px',borderRadius:10,fontSize:14,width:'100%',boxSizing:'border-box'}}
+              />
+              {classSearch.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setClassSearch('')}
+                  title="Цэвэрлэх"
+                  style={{
+                    position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',
+                    border:'none',background:'#f1f5f9',borderRadius:8,width:28,height:28,
+                    cursor:'pointer',fontSize:14,color:'#64748b',lineHeight:1,
+                  }}
+                >✕</button>
+              )}
+            </div>
+            <p style={{fontSize:12,color:'#64748b',marginTop:8}}>
+              {classSearch.trim()
+                ? <>Хайлт: <strong>{filteredQrClasses.length}</strong> / {qrClasses.length} анги</>
+                : <>Нийт <strong>{qrClasses.length}</strong> анги</>}
+            </p>
+          </div>
+        )}
       </div>
 
       {qrClasses.length === 0 ? (
@@ -10941,9 +11288,18 @@ function ClassQRPage({ user }) {
           <div style={{fontSize:40,marginBottom:12}}>📅</div>
           <p style={{color:'#64748b',fontWeight:600}}>Эхлээд Хуваарь хэсэгт хичээлийн хуваарь нийтлэнэ үү.</p>
         </div>
+      ) : filteredQrClasses.length === 0 ? (
+        <div className="card" style={{padding:48,textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:12}}>🔍</div>
+          <p style={{color:'#64748b',fontWeight:600}}>«{classSearch.trim()}» — тохирох анги олдсонгүй</p>
+          <button type="button" onClick={() => setClassSearch('')}
+            style={{marginTop:12,padding:'8px 16px',borderRadius:8,border:'1.5px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569'}}>
+            Хайлтыг цэвэрлэх
+          </button>
+        </div>
       ) : (
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:16}}>
-          {qrClasses.map((c) => {
+          {filteredQrClasses.map((c) => {
             const label = canonicalMainClassDisplayName(c) || c.name;
             return (
               <div key={c.id} className="card" style={{padding:16,textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
@@ -13239,7 +13595,6 @@ function DisciplinePage({ user }) {
     const dayKey = DAYS_K[jsDay - 1];
     const cls = classes.find(c => String(c?.id||'') === cid);
     if (!cls) return new Set();
-    const norm = s => (s||'').toLowerCase().replace(/\s+/g,'');
     const tEntry = publishedHuwiari.teachers.find(t => scheduleNamesMatch(t.name, teacherLoginName));
     if (!tEntry?.schedule) return new Set();
     const periods = new Set();
@@ -13247,7 +13602,7 @@ function DisciplinePage({ user }) {
       const offset = si === 0 ? 0 : 7;
       for (let p = 1; p <= 7; p++) {
         const val = (tEntry.schedule[dayKey]?.[shift]?.[p]?.val || '').trim();
-        if (val && norm(val) === norm(cls.name)) {
+        if (val && scheduleCellMatchesClass(val, cls)) {
           periods.add(p + offset);
         }
       }
@@ -13268,17 +13623,18 @@ function DisciplinePage({ user }) {
     const dayKey = DAYS_K[jsDay - 1];
     const cls = classes.find(c => String(c?.id||'') === cid);
     if (!cls) return map;
-    const norm = s => (s||'').toLowerCase().replace(/\s+/g,'');
     publishedHuwiari.teachers.forEach(t => {
       if (!t.schedule) return;
       SHIFTS_K.forEach((shift, si) => {
         const offset = si === 0 ? 0 : 7;
         for (let p = 1; p <= 7; p++) {
           const val = (t.schedule[dayKey]?.[shift]?.[p]?.val || '').trim();
-          if (val && norm(val) === norm(cls.name)) {
+          if (val && scheduleCellMatchesClass(val, cls)) {
             const period = p + offset;
             const isMe = scheduleNamesMatch(t.name, teacherLoginName);
-            map[period] = { name: t.name || '', isMe };
+            if (!map[period] || isMe) {
+              map[period] = { name: t.name || '', isMe, shift };
+            }
           }
         }
       });
@@ -13291,15 +13647,32 @@ function DisciplinePage({ user }) {
     const e = dayData.periods?.[period] || {};
     const isMyPeriod = myPeriods.has(period);
     const tInfo = periodTeacherMap[period] || null;
-    // QR-аар нэвтэрсэн ангид бүх цагийг бүртгэнэ; эсвэл өөрийн цаг / анги удирдсан багш
-    const canEdit = isQrClassSession || isMyPeriod || isHomeroomTeacher || !tInfo;
+    const isAdminView = user?.role === 'admin';
+    // QR / анги удирдагч / админ / өөрийн цаг — бичих; бусад цаг — унших
+    const canEdit = isAdminView || isQrClassSession || isMyPeriod || isHomeroomTeacher || !tInfo;
     const selectedCount = (colKey) => {
       const v = e[colKey] || '';
       return v.split(',').map(x=>x.trim()).filter(Boolean).length;
     };
+    const renderReadonlyCell = (col) => {
+      const cnt = selectedCount(col.key);
+      if (!cnt) {
+        return <span style={{color:'#cbd5e1',fontSize:12,display:'block',textAlign:'center'}}>—</span>;
+      }
+      const raw = e[col.key] || '';
+      const display = col.key === 'excused' ? formatExcusedCellDisplay(raw) : raw;
+      return (
+        <span style={{
+          display:'block',textAlign:'center',fontSize:11,fontWeight:700,color:col.color,
+          background:col.color+'18',borderRadius:6,padding:'4px 6px',lineHeight:1.35,wordBreak:'break-word',
+        }}>
+          {display}
+        </span>
+      );
+    };
     return (
-      <tr style={{background: isMyPeriod ? '#fef9c3' : (period%2===0?'#fafafa':'#fff'),
-        opacity: canEdit ? 1 : 0.5}}>
+      <tr style={{background: isMyPeriod ? '#fef9c3' : (tInfo ? '#f8fafc' : (period%2===0?'#fafafa':'#fff')),
+        opacity: 1}}>
         <td style={{padding:'6px 8px',fontWeight:800,fontSize:15,
           color: isMyPeriod ? '#92400e' : '#4f46e5',textAlign:'center',
           border: isMyPeriod ? '2px solid #fbbf24' : '1.5px solid #e5e7eb',
@@ -13311,30 +13684,37 @@ function DisciplinePage({ user }) {
               Таны цаг
             </div>
           )}
-          {!isMyPeriod && tInfo && (
-            <div style={{fontSize:8,fontWeight:600,color:'#6366f1',background:'#eef2ff',
-              borderRadius:4,padding:'1px 2px',marginTop:2,lineHeight:1.3,
-              overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:56}}>
-              {(tInfo.name||'').split(/[\s.]+/).slice(-1)[0]}
-            </div>
-          )}
         </td>
-        <td style={{padding:'4px 8px',fontSize:11,
-          color: isMyPeriod ? '#92400e' : '#64748b',
+        <td style={{
+          padding:'8px 10px',fontSize:11,verticalAlign:'top',
           border: isMyPeriod ? '2px solid #fbbf24' : '1.5px solid #e5e7eb',
-          whiteSpace:'nowrap',fontWeight: isMyPeriod ? 700 : 400}}>
-          {PERIOD_TIMES[period]}
-          {!isMyPeriod && tInfo && (
-            <div style={{fontSize:9,color:'#818cf8',marginTop:1,
-              whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:90}}>
-              {tInfo.name}
+          background: tInfo ? '#f0fdf4' : '#fff',minWidth:130,
+        }}>
+          <div style={{fontWeight:600,color:'#64748b',fontSize:10,marginBottom:4}}>{PERIOD_TIMES[period]}</div>
+          {tInfo ? (
+            <div style={{
+              padding:'8px 10px',borderRadius:10,
+              background: tInfo.isMe ? 'linear-gradient(135deg,#dcfce7,#bbf7d0)' : '#ecfdf5',
+              border:'1.5px solid ' + (tInfo.isMe ? '#22c55e' : '#86efac'),
+            }}>
+              <div style={{fontSize:9,fontWeight:800,color:'#166534',letterSpacing:0.3,marginBottom:3}}>
+                📚 Хичээлийн багш
+              </div>
+              <div style={{fontSize:13,fontWeight:800,color:'#15803d',lineHeight:1.3,wordBreak:'break-word'}}>
+                {tInfo.name}
+              </div>
+              {tInfo.isMe && (
+                <div style={{fontSize:9,fontWeight:700,color:'#166534',marginTop:4}}>✓ Таны цаг</div>
+              )}
             </div>
+          ) : (
+            <div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>Хуваарьгүй</div>
           )}
         </td>
         {COLS.map(col => (
           <td key={col.key} style={tdStyle(col.color)}>
             {!canEdit ? (
-              <span style={{color:'#d1d5db',fontSize:12,display:'block',textAlign:'center'}}>—</span>
+              renderReadonlyCell(col)
             ) : col.isScore ? (
               <select value={e[col.key]||''} onChange={ev=>updateEntry(period,col.key,ev.target.value)}
                 style={{width:'100%',border:'none',background:'transparent',fontSize:13,color:'#374151',outline:'none',cursor:'pointer',textAlign:'center'}}>
@@ -14134,7 +14514,7 @@ function DisciplinePage({ user }) {
                 <thead>
                   <tr>
                     <th style={{background:'#1e40af',color:'#fff',padding:'8px 10px',fontSize:12,fontWeight:700,border:'1.5px solid #1e3a8a',textAlign:'center',minWidth:44}}>Цаг</th>
-                    <th style={{background:'#1e40af',color:'#fff',padding:'8px 10px',fontSize:12,fontWeight:700,border:'1.5px solid #1e3a8a',minWidth:90}}>Хугацаа</th>
+                    <th style={{background:'#1e40af',color:'#fff',padding:'8px 10px',fontSize:12,fontWeight:700,border:'1.5px solid #1e3a8a',minWidth:140}}>Хугацаа / Багш</th>
                     {COLS.map(col=><th key={col.key} style={thStyle(col.color)}>{col.label}</th>)}
                   </tr>
                 </thead>
@@ -17332,12 +17712,68 @@ function TeachersManagement({ user }) {
   const [pwDrafts, setPwDrafts] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem('irts_schedule_teacher_pw') || '{}'); } catch (_) { return {}; }
   });
-  const persistPwDrafts = (next) => {
+  const [pwSavingKey, setPwSavingKey] = React.useState('');
+  const [pwSavedAt, setPwSavedAt] = React.useState({});
+  const updatePwDraftLocal = (next) => {
     setPwDrafts(next);
     try { localStorage.setItem('irts_schedule_teacher_pw', JSON.stringify(next)); } catch (_) {}
-    if (scheduleTeachers.length) syncTeacherLoginsFromPwDrafts(scheduleTeachers, next);
   };
   const scheduleTeachers = publishedLesson?.teachers || [];
+
+  const hydratePwDraftsFromFirestore = React.useCallback(async () => {
+    try {
+      const accounts = await ensureTeacherLoginAccountsLoaded();
+      if (!accounts.length) return;
+      setPwDrafts((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        accounts.forEach((a) => {
+          const login = (a.loginName || '').trim();
+          const pw = String(a.password || '').trim();
+          if (!login || pw.length < 6) return;
+          const sched = scheduleTeachers.find((t) => scheduleNamesMatch(t.name, login));
+          const key = (sched?.name || login).trim();
+          if (!next[key]) { next[key] = pw; changed = true; }
+        });
+        if (!changed) return prev;
+        try { localStorage.setItem('irts_schedule_teacher_pw', JSON.stringify(next)); } catch (_) {}
+        return next;
+      });
+    } catch (e) {
+      console.warn('[TeachersManagement] hydrate passwords', e);
+    }
+  }, [scheduleTeachers]);
+
+  React.useEffect(() => {
+    if (window.__firebaseReady) hydratePwDraftsFromFirestore();
+    else window.addEventListener('firebase-ready', hydratePwDraftsFromFirestore, { once: true });
+  }, [hydratePwDraftsFromFirestore]);
+
+  const saveTeacherRowPassword = async (teacherName) => {
+    const key = String(teacherName || '').trim();
+    if (!key) return;
+    const pw = String(pwDrafts[key] || '').trim();
+    if (pw.length < 6) {
+      alert('⚠️ Нууц үг дор хаяж 6 тэмдэгт байх ёстой.');
+      return;
+    }
+    setPwSavingKey(key);
+    try {
+      const sched = scheduleTeachers.find((t) => scheduleNamesMatch(t.name, key));
+      await upsertTeacherLoginAccount(key, pw, {
+        subject: sched?.subject || '',
+        homeroom: sched?.homeroom || '',
+        displayName: sched?.name || key,
+      });
+      setPwSavedAt((prev) => ({ ...prev, [key]: Date.now() }));
+      setSuccessMsg(`✅ «${key}» — нууц үг хадгалагдлаа. Багш ангийн QR уншуулж, энэ нэр + нууц үгээр нэвтэрнэ.`);
+      setTimeout(() => setSuccessMsg(''), 8000);
+    } catch (e) {
+      alert('Хадгалах алдаа: ' + (e.message || e));
+    } finally {
+      setPwSavingKey('');
+    }
+  };
 
   React.useEffect(() => {
     if (!pendingTeachers.length) return;
@@ -17348,7 +17784,7 @@ function TeachersManagement({ user }) {
       const pw = String(p.password || '').trim();
       if (key && pw.length >= 6 && !next[key]) { next[key] = pw; changed = true; }
     });
-    if (changed) persistPwDrafts(next);
+    if (changed) updatePwDraftLocal(next);
   }, [pendingTeachers]);
 
   // ✅ MULTI-TENANCY: schoolId-г localStorage / user-аас авна
@@ -17412,9 +17848,9 @@ function TeachersManagement({ user }) {
     const db2 = getDB2();
     try {
       const nextPw = { ...pwDrafts, [name]: pw };
-      persistPwDrafts(nextPw);
+      updatePwDraftLocal(nextPw);
       const sched = scheduleTeachers.find((t) => scheduleNamesMatch(t.name, name));
-      upsertTeacherLoginAccount(name, pw, {
+      await upsertTeacherLoginAccount(name, pw, {
         subject: sched?.subject || newTeacher.subject || '',
         homeroom: sched?.homeroom || '',
       });
@@ -17708,7 +18144,7 @@ function TeachersManagement({ user }) {
           <div style={{background:'#eff6ff',border:'1.5px solid #bfdbfe',borderRadius:12,padding:20,marginBottom:16}}>
             <h3 style={{fontSize:15,fontWeight:700,color:'#1e40af',marginBottom:8}}>➕ Багш нэмэх (гараар)</h3>
             <p style={{fontSize:12,color:'#64748b',marginBottom:14,lineHeight:1.5}}>
-              Доорх жагсаалтад нууц үг оруулна уу. Эсвэл энд нэр + нууц үг бичиж хадгална.
+              Доорх жагсаалтад нууц үг оруулаад <strong>💾 Хадгалах</strong> дарна. Багш ангийн QR уншуулж, хуваарийн нэр + нууц үгээр нэвтэрч <strong>Дэг дэвтэр</strong> рүү орно.
             </p>
             <form onSubmit={handleAdd}>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
@@ -17901,19 +18337,37 @@ function TeachersManagement({ user }) {
               📅 Хичээлийн хуваарь нийтлэгдээгүй байна. <strong>Хуваарь</strong> хуудаснаас хуваарь нийтлэхэд бүх багш энд автоматаар гарна.
             </div>
           )}
+          {scheduleTeachers.length > 0 && (
+            <div style={{background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:10,padding:'10px 12px',fontSize:12,color:'#1e40af',marginBottom:10,lineHeight:1.5}}>
+              <strong>Туршилт:</strong> Нэг багшийн нууц үг оруулаад <strong>💾 Хадгалах</strong> → тухайн ангийн QR уншуулж нэвтэрнэ.
+            </div>
+          )}
           {filteredRoster.length > 0 ? (
             <div style={{display:'flex',flexDirection:'column',gap:8,maxHeight:'min(70vh, 720px)',overflowY:'auto',paddingRight:4}}>
+              <div style={{
+                display:'grid',
+                gridTemplateColumns:'minmax(140px,1fr) minmax(88px,0.75fr) minmax(180px,1.5fr) minmax(120px,1fr) auto minmax(88px,auto)',
+                gap:10,padding:'0 12px 4px',fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.3,
+              }}>
+                <span>Багш</span>
+                <span style={{textAlign:'center'}}>Хичээл</span>
+                <span>Заадаг ангиуд</span>
+                <span>Нууц үг</span>
+                <span />
+                <span style={{textAlign:'right'}}>Төлөв</span>
+              </div>
               {filteredRoster.map((row) => {
                 const t = row.schedule;
                 const pwKey = (t.name || '').trim();
                 const email = teacherInfoMap[pwKey]?.email || row.active?.email || row.pending?.email || '';
                 const isActive = !!row.active;
                 const isPending = !!row.pending && !isActive;
+                const teachClasses = getTeacherScheduleClassLabels(pwKey, publishedLesson);
                 return (
                   <div key={row.key} style={{
                     display:'grid',
-                    gridTemplateColumns:'minmax(140px,1fr) minmax(120px,1.2fr) minmax(160px,200px) minmax(120px,auto)',
-                    alignItems:'center',gap:12,padding:'10px 12px',
+                    gridTemplateColumns:'minmax(140px,1fr) minmax(88px,0.75fr) minmax(180px,1.5fr) minmax(120px,1fr) auto minmax(88px,auto)',
+                    alignItems:'center',gap:10,padding:'10px 12px',
                     background: isPending ? '#fffbeb' : '#fff',
                     borderRadius:12,
                     border:'1px solid ' + (isPending ? '#fde68a' : '#f1f5f9'),
@@ -17921,16 +18375,50 @@ function TeachersManagement({ user }) {
                     <div style={{minWidth:0}}>
                       <div style={{fontWeight:800,color:'#1e293b',fontSize:14}}>{t.name || '—'}</div>
                       {email && <div style={{fontSize:11,color:'#94a3b8',marginTop:2,wordBreak:'break-all'}}>{email}</div>}
+                      {pwSavedAt[pwKey] && Date.now() - pwSavedAt[pwKey] < 120000 && (
+                        <div style={{fontSize:10,color:'#15803d',fontWeight:700,marginTop:4}}>✅ Нууц үг хадгалагдсан</div>
+                      )}
                     </div>
-                    <div style={{fontSize:13,color:'#94a3b8',textAlign:'center'}}>{scheduleTeacherMetaLine(t)}</div>
+                    <div style={{fontSize:12,color:'#64748b',textAlign:'center',lineHeight:1.4}}>{scheduleTeacherMetaLine(t)}</div>
+                    <div style={{display:'flex',flexWrap:'wrap',gap:5,alignItems:'center',minHeight:32}}>
+                      {teachClasses.length > 0 ? teachClasses.map((cls) => (
+                        <span
+                          key={cls}
+                          title={cls}
+                          style={{
+                            fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',
+                            border:'1px solid #93c5fd',borderRadius:8,padding:'3px 8px',lineHeight:1.3,
+                          }}
+                        >
+                          {cls}
+                        </span>
+                      )) : (
+                        <span style={{fontSize:12,color:'#cbd5e1'}}>—</span>
+                      )}
+                    </div>
                     <input
                       type="text"
                       className="input-field"
-                      placeholder="Нууц үг оруулна уу"
+                      placeholder="Нууц үг (6+ тэмдэгт)"
+                      autoComplete="off"
                       value={pwDrafts[pwKey] || row.pending?.password || ''}
-                      onChange={(ev) => persistPwDrafts({ ...pwDrafts, [pwKey]: ev.target.value })}
+                      onChange={(ev) => updatePwDraftLocal({ ...pwDrafts, [pwKey]: ev.target.value })}
+                      onKeyDown={(ev) => { if (ev.key === 'Enter') saveTeacherRowPassword(pwKey); }}
                       style={{margin:0,padding:'8px 12px',borderRadius:10,border:'1.5px solid #fde68a',fontSize:13}}
                     />
+                    <button
+                      type="button"
+                      disabled={pwSavingKey === pwKey}
+                      onClick={() => saveTeacherRowPassword(pwKey)}
+                      title="Багш QR + нэр + нууц үгээр нэвтэрнэ"
+                      style={{
+                        padding:'8px 14px',borderRadius:10,border:'none',cursor:pwSavingKey===pwKey?'wait':'pointer',
+                        fontSize:12,fontWeight:800,whiteSpace:'nowrap',
+                        background: pwSavingKey === pwKey ? '#94a3b8' : '#2563eb', color:'#fff',
+                      }}
+                    >
+                      {pwSavingKey === pwKey ? '⏳' : '💾 Хадгалах'}
+                    </button>
                     <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6}}>
                       {isActive ? (
                         <span style={{fontSize:11,fontWeight:700,color:'#15803d',background:'#dcfce7',padding:'3px 8px',borderRadius:20}}>✅ Идэвхтэй</span>
@@ -20901,16 +21389,7 @@ function App() {
     const sid = String(effectiveUser.schoolId).trim();
     if (!sid || hydratedSchoolRef.current === sid) return;
     hydratedSchoolRef.current = sid;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await hydrateSchoolFirestoreData(sid);
-        if (!cancelled && r.loaded) console.log('[App] Firebase sync:', sid, r.loaded, 'түлхүүр');
-      } catch (e) {
-        if (!cancelled) console.warn('[App] Firebase sync', e);
-      }
-    })();
-    return () => { cancelled = true; };
+    runSchoolHydrateInBackground(sid);
   }, [appReady, effectiveUser?.schoolId]);
 
   React.useEffect(() => {
