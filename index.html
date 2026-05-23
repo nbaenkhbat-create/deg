@@ -78,6 +78,40 @@
         window.__firebaseReady = true;
         window.dispatchEvent(new Event('firebase-ready'));
         console.log('[Firebase] ready — project:', firebaseConfig.projectId);
+
+        // Багш QR (утас) — auth + schoolId-г React-ээс өмнө бэлдэнэ
+        (function teacherQrBootstrap() {
+          try {
+            var params = new URLSearchParams(window.location.search || '');
+            var qrRaw = params.get('qr');
+            if (!qrRaw && params.get('portal') !== 'teacher') return;
+            window.__isTeacherQrPage = true;
+            if (qrRaw) {
+              var payload = null;
+              try { payload = JSON.parse(decodeURIComponent(qrRaw)); }
+              catch (e1) { try { payload = JSON.parse(qrRaw); } catch (e2) { payload = null; } }
+              if (payload && payload.className) {
+                try { sessionStorage.setItem('irts_teacher_qr_class', JSON.stringify(payload)); } catch (_) {}
+              }
+              if (payload && payload.schoolId) {
+                var sid = String(payload.schoolId).trim().toLowerCase()
+                  .replace(/\s+/g, '_').replace(/[^a-z0-9_\u0400-\u04FF]/g, '').substring(0, 40);
+                if (sid) {
+                  window.__currentSchoolId = sid;
+                  try { localStorage.setItem('irts_school_id', sid); } catch (_) {}
+                }
+              }
+            }
+            window.__teacherPortalAuthEarly = _auth.signInAnonymously()
+              .then(function () { console.log('[QR bootstrap] anonymous auth OK'); return true; })
+              .catch(function (e) {
+                console.warn('[QR bootstrap] anonymous auth', e && (e.code || e.message));
+                return false;
+              });
+          } catch (bootErr) {
+            console.warn('[QR bootstrap]', bootErr);
+          }
+        })();
       } catch (e) {
         console.error('Firebase initialization failed:', e);
         window.__firebaseReady = false;
@@ -971,19 +1005,52 @@ const snapExists = (snap) => {
   return typeof snap.exists === 'function' ? snap.exists() : !!snap.exists;
 };
 
-/** Багш QR нэвтрэх — compat SDK-аар шууд унших (утас дээр илүү найдвартай) */
-async function readSchoolIrtsDataCompat(key, schoolIdOverride) {
-  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function schoolIdCandidates(schoolIdOverride) {
+  const raw = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  const slug = schoolIdHelpers.toSlug(raw) || raw;
+  const out = [];
+  [raw, slug, 'default_school'].forEach((s) => {
+    const t = String(s || '').trim();
+    if (t && !out.includes(t)) out.push(t);
+  });
+  return out.length ? out : ['default_school'];
+}
+
+async function readSchoolIrtsDataCompatOnce(key, sid) {
   if (!sid || !key) return undefined;
   try {
     const db2 = (window.__firebaseCompat || (typeof firebase !== 'undefined' ? firebase : null))?.firestore?.();
     if (!db2) return undefined;
     const snap = await db2.collection('schools').doc(sid).collection('irts_data').doc(key).get();
-    if (snap.exists && snap.data() && Object.prototype.hasOwnProperty.call(snap.data(), 'value')) {
+    const exists = typeof snap.exists === 'function' ? snap.exists() : !!snap.exists;
+    if (exists && snap.data() && Object.prototype.hasOwnProperty.call(snap.data(), 'value')) {
       return snap.data().value;
     }
+    const leg = await db2.collection('irts_data').doc(key).get();
+    const legExists = typeof leg.exists === 'function' ? leg.exists() : !!leg.exists;
+    if (legExists && leg.data() && Object.prototype.hasOwnProperty.call(leg.data(), 'value')) {
+      return leg.data().value;
+    }
   } catch (e) {
-    console.warn('[readSchoolIrtsDataCompat]', key, sid, e.code || e.message);
+    console.warn('[readSchoolIrtsDataCompatOnce]', key, sid, e.code || e.message);
+  }
+  return undefined;
+}
+
+/** Багш QR нэвтрэх — compat SDK + давтан оролдлого (утас) */
+async function readSchoolIrtsDataCompat(key, schoolIdOverride) {
+  await ensureFirebaseAuthForTeacherPortal();
+  const candidates = schoolIdCandidates(schoolIdOverride);
+  for (const sid of candidates) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const val = await readSchoolIrtsDataCompatOnce(key, sid);
+      if (val !== undefined) return val;
+      if (attempt < 3) await sleepMs(350 * (attempt + 1));
+    }
   }
   return undefined;
 }
@@ -1764,19 +1831,52 @@ function normClassLabelKey(name) {
   return base.split('').map((ch) => map[ch] || ch).join('');
 }
 
+/** Хуваарийн нүхнээс ангийн түлхүүрүүд (7а, 7д — «7а-Мат», «7а 603» гэх мэт) */
+function extractScheduleCellClassKeys(scheduleVal) {
+  const keys = new Set();
+  const val = String(scheduleVal || '').trim();
+  if (!val) return keys;
+  const addRaw = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s) return;
+    const k = normClassLabelKey(s);
+    if (k) keys.add(k);
+  };
+  addRaw(val);
+  addRaw(classNameFirstToken(val));
+  val.split(/[\s,;/|]+/).forEach((part) => addRaw(part));
+  val.split(/[-–—]+/).forEach((part) => addRaw(part.trim()));
+  const nk = normClassKey(val);
+  SMARTDUTY_MAIN_CLASS_LABELS_ORDERED.forEach((lbl) => {
+    const lk = normClassLabelKey(lbl);
+    const lkNorm = normClassKey(lbl);
+    if (lk && lkNorm && (nk.includes(lkNorm) || lkNorm.includes(nk))) keys.add(lk);
+  });
+  const gradeLetterRe = /(1[0-2]|[6-9])\s*[-–—.]?\s*([абвгдеa-z])/gi;
+  let m;
+  while ((m = gradeLetterRe.exec(val))) {
+    addRaw(m[1] + m[2]);
+  }
+  return keys;
+}
+
 /** Хуваарийн нүх (10б, 7а - Математик гэх мэт) ↔ ангийн мөр таарч байгаа эсэх */
 function scheduleCellMatchesClass(scheduleVal, classRow) {
   const val = String(scheduleVal || '').trim();
   if (!val || !classRow) return false;
   const classKey = normClassLabelKey(classRow.name);
+  if (!classKey) return false;
+  const cellKeys = extractScheduleCellClassKeys(val);
+  if (cellKeys.has(classKey)) return true;
   const valKey = normClassLabelKey(val);
-  if (classKey && valKey && classKey === valKey) return true;
+  if (valKey && valKey === classKey) return true;
   const valTok = classNameFirstToken(val);
-  if (classKey && normClassLabelKey(valTok) === classKey) return true;
+  if (normClassLabelKey(valTok) === classKey) return true;
   const norm = (s) => String(s || '').toLowerCase().replace(/[\s\-\.]/g, '');
   if (norm(valTok) === norm(classRow.name)) return true;
   if (norm(val) === norm(classRow.name)) return true;
   if (normClassKey(valTok) === normClassKey(classRow.name)) return true;
+  if (normClassKey(val).includes(normClassKey(classRow.name))) return true;
   return false;
 }
 
@@ -1907,12 +2007,18 @@ const TEACHER_QR_CLASS_SS = 'irts_teacher_qr_class';
 const SCHEDULE_DAYS_K = ['ДАВАА','МЯГМАР','ЛХАГВА','ПҮРЭВ','БААСАН'];
 const SCHEDULE_SHIFTS_K = ['I ээлж','II ээлж'];
 
-function loadTeacherLoginAccounts() {
+function loadTeacherLoginAccounts(schoolIdOverride) {
+  const keys = [TEACHER_LOGIN_LS];
+  if (schoolIdOverride) keys.unshift(teacherLoginAccountsCacheKey(schoolIdOverride));
   try {
-    const raw = localStorage.getItem(TEACHER_LOGIN_LS);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch (_) { return []; }
+    for (const k of keys) {
+      const raw = localStorage.getItem(k);
+      if (!raw) continue;
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return arr;
+    }
+  } catch (_) {}
+  return [];
 }
 
 function mergeTeacherLoginAccountLists(localList, remoteList) {
@@ -1934,13 +2040,18 @@ function mergeTeacherLoginAccountLists(localList, remoteList) {
 /** Firestore + localStorage — багшийн нууц үгийн жагсаалт (нэвтрэхээс өмнө дуудна) */
 async function ensureTeacherLoginAccountsLoaded(schoolIdOverride) {
   const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
-  let local = loadTeacherLoginAccounts();
+  let local = loadTeacherLoginAccounts(sid);
+  if (local.length) return local;
+  await ensureFirebaseAuthForTeacherPortal();
   try {
     let fromFs = await readSchoolIrtsDataCompat(TEACHER_LOGIN_LS, sid);
     if (!Array.isArray(fromFs)) fromFs = await fsGet(TEACHER_LOGIN_LS, null, sid || undefined);
     if (Array.isArray(fromFs)) {
       local = mergeTeacherLoginAccountLists(local, fromFs);
-      try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local)); } catch (_) {}
+      try {
+        localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local));
+        if (sid) localStorage.setItem(teacherLoginAccountsCacheKey(sid), JSON.stringify(local));
+      } catch (_) {}
     }
   } catch (e) {
     console.warn('[teacher-login] Firestore load', e);
@@ -1992,14 +2103,26 @@ function collectScheduleClassLabelKeys(publishedHuwiari) {
   const keys = new Set();
   if (!publishedHuwiari?.teachers) return keys;
   publishedHuwiari.teachers.forEach((t) => {
-    if (t.homeroom) keys.add(normClassLabelKey(t.homeroom));
-    SCHEDULE_DAYS_K.forEach((day) => {
-      SCHEDULE_SHIFTS_K.forEach((shift) => {
-        for (let p = 1; p <= 7; p++) {
-          const val = (t.schedule?.[day]?.[shift]?.[p]?.val || '').trim();
-          if (val) keys.add(normClassLabelKey(val));
-        }
-      });
+    collectClassKeysFromScheduleTeacherRow(t).forEach((k) => keys.add(k));
+  });
+  return keys;
+}
+
+function getScheduleTeachersMatchingName(teacherName, publishedHuwiari) {
+  if (!teacherName || !publishedHuwiari?.teachers) return [];
+  return publishedHuwiari.teachers.filter((te) => scheduleNamesMatch(te.name, teacherName));
+}
+
+function collectClassKeysFromScheduleTeacherRow(t) {
+  const keys = new Set();
+  if (!t) return keys;
+  if (t.homeroom) extractScheduleCellClassKeys(t.homeroom).forEach((k) => keys.add(k));
+  SCHEDULE_DAYS_K.forEach((day) => {
+    SCHEDULE_SHIFTS_K.forEach((shift) => {
+      for (let p = 1; p <= 7; p++) {
+        const val = (t.schedule?.[day]?.[shift]?.[p]?.val || '').trim();
+        if (val) extractScheduleCellClassKeys(val).forEach((k) => keys.add(k));
+      }
     });
   });
   return keys;
@@ -2008,16 +2131,8 @@ function collectScheduleClassLabelKeys(publishedHuwiari) {
 function getTeacherScheduleClassKeys(teacherName, publishedHuwiari) {
   const keys = new Set();
   if (!teacherName || !publishedHuwiari?.teachers) return keys;
-  const t = publishedHuwiari.teachers.find((te) => scheduleNamesMatch(te.name, teacherName));
-  if (!t) return keys;
-  if (t.homeroom) keys.add(normClassLabelKey(t.homeroom));
-  SCHEDULE_DAYS_K.forEach((day) => {
-    SCHEDULE_SHIFTS_K.forEach((shift) => {
-      for (let p = 1; p <= 7; p++) {
-        const val = (t.schedule?.[day]?.[shift]?.[p]?.val || '').trim();
-        if (val) keys.add(normClassLabelKey(val));
-      }
-    });
+  getScheduleTeachersMatchingName(teacherName, publishedHuwiari).forEach((t) => {
+    collectClassKeysFromScheduleTeacherRow(t).forEach((k) => keys.add(k));
   });
   return keys;
 }
@@ -2036,6 +2151,12 @@ let _teacherPortalAuthPromise = null;
 /** Багш QR — утас дээр Firestore уншихын тулд anonymous auth (Console → Authentication → Anonymous идэвхжүүлнэ) */
 async function ensureFirebaseAuthForTeacherPortal() {
   try {
+    if (window.__teacherPortalAuthEarly) {
+      try {
+        const early = await window.__teacherPortalAuthEarly;
+        if (early && window.__firebaseAuth?.currentUser) return true;
+      } catch (_) {}
+    }
     const auth = window.__firebaseAuth
       || (window.__firebaseCompat && typeof window.__firebaseCompat.auth === 'function' ? window.__firebaseCompat.auth() : null);
     if (!auth) return false;
@@ -2055,23 +2176,99 @@ async function ensureFirebaseAuthForTeacherPortal() {
   }
 }
 
+function teacherLoginAccountsCacheKey(schoolId) {
+  const sid = schoolIdHelpers.toSlug(schoolId) || String(schoolId || '').trim() || 'default_school';
+  return TEACHER_LOGIN_LS + '__' + sid;
+}
+
+function publishedHuwiariCacheKey(schoolId) {
+  const sid = schoolIdHelpers.toSlug(schoolId) || String(schoolId || '').trim() || 'default_school';
+  return 'irts_published_huwiari__' + sid;
+}
+
+/** Багш/жижүүрийн «Хуваарь» — нийтлэгдсэн хичээл + жижүүрийн хуваарийг Firebase-ээс татна */
+async function reloadTeacherPublishedSchedules(schoolIdOverride) {
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  if (!sid) return;
+  await ensureFirebaseAuthForTeacherPortal();
+  const specs = [
+    { key: 'irts_duty_published', def: {}, event: 'irts_duty_published_update' },
+    { key: 'irts_published_huwiari', def: null, event: 'irts_lesson_published_update' },
+  ];
+  for (const { key, def, event } of specs) {
+    try {
+      let val = await readSchoolIrtsDataCompat(key, sid);
+      if (val === undefined) val = await fsGet(key, def, sid);
+      if (val === undefined) continue;
+      mirrorIrtsValueToLocal(key, val);
+      broadcastIrtsDataHydrated(key, val, sid);
+      try {
+        window.dispatchEvent(new CustomEvent(event, { detail: val }));
+      } catch (_) {}
+    } catch (e) {
+      console.warn('[reloadTeacherPublishedSchedules]', key, sid, e);
+    }
+  }
+}
+
+/** QR нээгдэхэд нууц үг + хуваарийг урьдчилан татна (утас) */
+async function prefetchQrTeacherPortalData(schoolIdOverride) {
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  if (!sid) return { accounts: [], published: null, authOk: false, accountsOk: false };
+  setCurrentSchoolId(schoolIdHelpers.toSlug(sid) || sid);
+  const authOk = await ensureFirebaseAuthForTeacherPortal();
+  const [published, accounts] = await Promise.all([
+    ensurePublishedHuwiariForSchool(sid),
+    ensureTeacherLoginAccountsLoaded(sid),
+  ]);
+  return {
+    accounts: Array.isArray(accounts) ? accounts : [],
+    published: published && typeof published === 'object' ? published : null,
+    authOk: !!authOk,
+    accountsOk: Array.isArray(accounts) && accounts.length > 0,
+  };
+}
+
+function getPublishedHuwiariForSchoolLocal(schoolId) {
+  const sid = schoolIdHelpers.toSlug(schoolId) || String(schoolId || '').trim();
+  if (sid) {
+    try {
+      const scoped = JSON.parse(localStorage.getItem(publishedHuwiariCacheKey(sid)) || 'null');
+      if (scoped?.teachers?.length) return scoped;
+    } catch (_) {}
+  }
+  return getPublishedHuwiariLocal();
+}
+
 /** Утас/шинэ төхөөрөмж — хуваарийг Firebase-ээс татна */
 async function ensurePublishedHuwiariForSchool(schoolIdOverride) {
   const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
-  const local = getPublishedHuwiariLocal();
-  if (local?.teachers?.length && !schoolIdOverride) return local;
+  const local = getPublishedHuwiariForSchoolLocal(sid);
+  if (local?.teachers?.length) return local;
   if (!sid) return local;
+  await ensureFirebaseAuthForTeacherPortal();
   try {
     let fromFs = await readSchoolIrtsDataCompat('irts_published_huwiari', sid);
     if (!fromFs || typeof fromFs !== 'object') fromFs = await fsGet('irts_published_huwiari', null, sid);
     if (fromFs && typeof fromFs === 'object') {
       mirrorIrtsValueToLocal('irts_published_huwiari', fromFs);
+      try {
+        if (sid) localStorage.setItem(publishedHuwiariCacheKey(sid), JSON.stringify(fromFs));
+      } catch (_) {}
       return fromFs;
     }
   } catch (e) {
     console.warn('[huwiari] Firestore load', sid, e);
   }
   return local;
+}
+
+function accountTeachesClassForQr(a, className, published) {
+  if (!a || !className) return false;
+  if (teacherTeachesClassName(a.loginName, className, published)) return true;
+  const fakeRow = { name: className };
+  if (a.homeroom && scheduleCellMatchesClass(a.homeroom, fakeRow)) return true;
+  return false;
 }
 
 function filterTeacherAccountsByQrClass(accounts, password, className, published) {
@@ -2081,9 +2278,9 @@ function filterTeacherAccountsByQrClass(accounts, password, className, published
   const list = Array.isArray(accounts) ? accounts : [];
   const hasSchedule = !!(published?.teachers?.length);
   return list.filter((a) => {
-    if (String(a.password) !== pw) return false;
+    if (String(a.password || '').trim() !== pw) return false;
     if (!hasSchedule) return true;
-    return teacherTeachesClassName(a.loginName, cls, published);
+    return accountTeachesClassForQr(a, cls, published);
   });
 }
 
@@ -2094,8 +2291,9 @@ async function findTeacherAccountsForQrClass(className, password, schoolIdOverri
   if (!cls || pw.length < 6) return [];
   const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
   if (sid) setCurrentSchoolId(sid);
+  await ensureFirebaseAuthForTeacherPortal();
   const published = await ensurePublishedHuwiariForSchool(sid);
-  const accounts = await ensureTeacherLoginAccountsLoaded();
+  const accounts = await ensureTeacherLoginAccountsLoaded(sid);
   return filterTeacherAccountsByQrClass(accounts, pw, cls, published);
 }
 
@@ -2108,11 +2306,12 @@ function getTeacherScheduleClassLabels(teacherName, publishedHuwiari) {
   const addRaw = (raw) => {
     const s = String(raw || '').trim();
     if (!s) return;
-    const k = normClassLabelKey(s);
-    const display = canonicalMainClassDisplayName({ name: s }) || s;
-    if (!byKey.has(k) || display.length > (byKey.get(k) || '').length) {
-      byKey.set(k, display);
-    }
+    extractScheduleCellClassKeys(s).forEach((k) => {
+      const display = canonicalMainClassDisplayName({ name: s }) || classNameFirstToken(s) || s;
+      if (!byKey.has(k) || display.length > (byKey.get(k) || '').length) {
+        byKey.set(k, display);
+      }
+    });
   };
 
   addRaw(t.homeroom);
@@ -2129,15 +2328,12 @@ function getTeacherScheduleClassLabels(teacherName, publishedHuwiari) {
   );
 }
 
-function teacherTeachesClassName(teacherName, className, publishedHuwiari) {
-  if (!teacherName || !className) return false;
+function scheduleTeacherRowTeachesClass(t, className) {
+  if (!t || !className) return false;
   const want = normClassLabelKey(className);
-  const keys = getTeacherScheduleClassKeys(teacherName, publishedHuwiari);
-  if (keys.has(want)) return true;
+  const rowKeys = collectClassKeysFromScheduleTeacherRow(t);
+  if (want && rowKeys.has(want)) return true;
   const fakeRow = { name: className };
-  if (!publishedHuwiari?.teachers) return false;
-  const t = publishedHuwiari.teachers.find((te) => scheduleNamesMatch(te.name, teacherName));
-  if (!t) return false;
   if (t.homeroom && scheduleCellMatchesClass(t.homeroom, fakeRow)) return true;
   let hit = false;
   SCHEDULE_DAYS_K.forEach((day) => {
@@ -2149,6 +2345,17 @@ function teacherTeachesClassName(teacherName, className, publishedHuwiari) {
     });
   });
   return hit;
+}
+
+function teacherTeachesClassName(teacherName, className, publishedHuwiari) {
+  if (!teacherName || !className) return false;
+  const want = normClassLabelKey(className);
+  const keys = getTeacherScheduleClassKeys(teacherName, publishedHuwiari);
+  if (want && keys.has(want)) return true;
+  if (!publishedHuwiari?.teachers) return false;
+  const matches = getScheduleTeachersMatchingName(teacherName, publishedHuwiari);
+  if (!matches.length) return false;
+  return matches.some((t) => scheduleTeacherRowTeachesClass(t, className));
 }
 
 function findClassRowByLabel(className, allClasses) {
@@ -2172,8 +2379,11 @@ function readTeacherQrClassContext() {
 function applyTeacherQrPayload(payload) {
   if (!payload || !payload.className) return;
   const sid = String(payload.schoolId || '').trim();
-  if (sid) setCurrentSchoolId(schoolIdHelpers.toSlug(sid) || sid);
+  const sidSlug = sid ? (schoolIdHelpers.toSlug(sid) || sid) : '';
+  if (sidSlug) setCurrentSchoolId(sidSlug);
   try { sessionStorage.setItem(TEACHER_QR_CLASS_SS, JSON.stringify(payload)); } catch (_) {}
+  ensureFirebaseAuthForTeacherPortal().catch(() => {});
+  if (sidSlug) prefetchQrTeacherPortalData(sidSlug).catch(() => {});
 }
 
 function buildClassQrWebUrl(classRow, schoolId) {
@@ -2300,17 +2510,20 @@ function useLS(key, def) {
     return () => window.removeEventListener('irts-school-data-ready', onReady);
   }, [key, schoolId]);
 
-  // Нийтлэгдсэн хичээлийн хуваарь: localStorage + CustomEvent-ээр шинэчлэгдэхэд (Firestore-ээс удаан ирэхээс өмнө) бүх хэрэглэгчид ижил өгөгдөл
+  // Нийтлэгдсэн хуваарь: localStorage + CustomEvent (Firestore-ээс удаан ирэхээс өмнө бүх дэлгэц шинэчлэгдэнэ)
   useEffect(() => {
-    if (key !== 'irts_published_huwiari') return;
-    const onLessonPub = (e) => {
+    if (key !== 'irts_published_huwiari' && key !== 'irts_duty_published') return;
+    const eventName = key === 'irts_published_huwiari'
+      ? 'irts_lesson_published_update'
+      : 'irts_duty_published_update';
+    const onPub = (e) => {
       if (e?.detail === undefined || e.detail === null) return;
       if (writingRef.current) return;
       setData(e.detail);
       ls.set(key, e.detail);
     };
-    window.addEventListener('irts_lesson_published_update', onLessonPub);
-    return () => window.removeEventListener('irts_lesson_published_update', onLessonPub);
+    window.addEventListener(eventName, onPub);
+    return () => window.removeEventListener(eventName, onPub);
   }, [key]);
 
   const update = useCallback((val) => {
@@ -2774,6 +2987,10 @@ function LoginPage({ onLogin }) {
   const [qrMatchedTeacher, setQrMatchedTeacher] = React.useState(null);
   const [qrMatchCandidates, setQrMatchCandidates] = React.useState([]);
   const [qrMatchLoading, setQrMatchLoading] = React.useState(false);
+  const [qrDataLoading, setQrDataLoading] = React.useState(false);
+  const [qrPortalReady, setQrPortalReady] = React.useState(false);
+  const [qrClassHint, setQrClassHint] = React.useState('');
+  const [qrMobileIssue, setQrMobileIssue] = React.useState('');
 
   React.useEffect(() => {
     try {
@@ -2818,13 +3035,105 @@ function LoginPage({ onLogin }) {
   const [showResend,setShowResend]= React.useState(false);
 
   const isQrClassLogin = portal === 'teacher' && !!qrLoginClass;
+
+  React.useEffect(() => {
+    if (!isQrClassLogin) return;
+    let cancelled = false;
+    (async () => {
+      setQrDataLoading(true);
+      setQrPortalReady(false);
+      setQrMobileIssue('');
+      try {
+        const ctx = readTeacherQrClassContext();
+        const sid = String(
+          ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : ''
+        ).trim() || String(getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+        const pack = await prefetchQrTeacherPortalData(sid);
+        if (cancelled) return;
+        if (!pack.authOk) setQrMobileIssue('auth');
+        else if (!pack.accountsOk) setQrMobileIssue('accounts');
+        const published = pack.published;
+        const cls = qrLoginClass || ctx?.className;
+        if (cls && published?.teachers?.length) {
+          const names = published.teachers
+            .filter((t) => teacherTeachesClassName(t.name, cls, published))
+            .map((t) => t.name)
+            .filter(Boolean);
+          setQrTeacherNames(names);
+        }
+        setQrPortalReady(pack.authOk && pack.accountsOk);
+      } catch (e) {
+        console.warn('[QR login] preload', e);
+        if (!cancelled) setQrMobileIssue('network');
+      } finally {
+        if (!cancelled) setQrDataLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isQrClassLogin, qrLoginClass]);
+
+  const runQrPasswordMatch = React.useCallback(async (pw) => {
+    const trimmed = String(pw || '').trim();
+    if (trimmed.length < 6 || !qrLoginClass) {
+      setQrMatchedTeacher(null);
+      setQrMatchCandidates([]);
+      setQrClassHint('');
+      return;
+    }
+    setQrMatchLoading(true);
+    setQrClassHint('');
+    try {
+      const ctx = readTeacherQrClassContext();
+      const sid = String(ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : '')
+        || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+      const pack = await prefetchQrTeacherPortalData(sid);
+      const published = pack.published;
+      const accounts = pack.accounts;
+      if (!pack.authOk) {
+        setQrMobileIssue('auth');
+        setQrClassHint('Утас: Firebase Console → Authentication → Anonymous sign-in идэвхжүүлнэ үү.');
+        return;
+      }
+      if (!pack.accountsOk) {
+        setQrMobileIssue('accounts');
+        setQrClassHint('Багшийн нууц үг серверээс татагдаагүй. Компьютер дээр «💾 Хадгалах» дарсан эсэхийг шалгана уу.');
+        return;
+      }
+      const matches = filterTeacherAccountsByQrClass(accounts, trimmed, qrLoginClass, published);
+      setQrMatchCandidates(matches);
+      setQrMatchedTeacher(matches.length === 1 ? matches[0] : null);
+      if (!matches.length) {
+        const pwOnly = accounts.filter((a) => String(a.password || '').trim() === trimmed);
+        if (!pwOnly.length) {
+          setQrClassHint('Нууц үг буруу эсвэл бүртгэлд ороогүй байна.');
+        } else if (pwOnly.length && published?.teachers?.length) {
+          const who = pwOnly[0];
+          const labels = getTeacherScheduleClassLabels(who.loginName, published);
+          if (labels.length) {
+            setQrClassHint('Нууц үг зөв. Таны хуваарийн ангиуд: ' + labels.join(', ') + ' — «' + (canonicalMainClassDisplayName({ name: qrLoginClass }) || qrLoginClass) + '» биш.');
+          } else {
+            setQrClassHint('Нууц үг зөв ч хуваарь дээр энэ анги олдсонгүй.');
+          }
+        } else if (pwOnly.length) {
+          setQrClassHint('Нууц үг зөв. Хуваарь ачаалагдаагүй — хуудсыг дахин ачаална уу.');
+        }
+      }
+    } catch (_) {
+      setQrMatchedTeacher(null);
+      setQrMatchCandidates([]);
+      setQrClassHint('');
+    } finally {
+      setQrMatchLoading(false);
+    }
+  }, [qrLoginClass]);
+
   const qrClassDisplay = React.useMemo(() => {
     if (!qrLoginClass) return '';
     return canonicalMainClassDisplayName({ name: qrLoginClass }) || qrLoginClass;
   }, [qrLoginClass]);
 
   React.useEffect(() => {
-    if (!isQrClassLogin || mode !== 'login') return;
+    if (!isQrClassLogin || mode !== 'login' || qrDataLoading) return;
     const pw = String(password || '').trim();
     if (pw.length < 6) {
       setQrMatchedTeacher(null);
@@ -2832,24 +3141,12 @@ function LoginPage({ onLogin }) {
       return;
     }
     let cancelled = false;
-    const timer = setTimeout(async () => {
-      setQrMatchLoading(true);
-      try {
-        const matches = await findTeacherAccountsForQrClass(qrLoginClass, pw);
-        if (cancelled) return;
-        setQrMatchCandidates(matches);
-        setQrMatchedTeacher(matches.length === 1 ? matches[0] : null);
-      } catch (_) {
-        if (!cancelled) {
-          setQrMatchedTeacher(null);
-          setQrMatchCandidates([]);
-        }
-      } finally {
-        if (!cancelled) setQrMatchLoading(false);
-      }
-    }, 280);
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      runQrPasswordMatch(pw);
+    }, 320);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [password, qrLoginClass, mode, isQrClassLogin]);
+  }, [password, qrLoginClass, mode, isQrClassLogin, qrDataLoading, runQrPasswordMatch]);
 
   const getAuthV8 = () => {
     if (window.__firebaseAuth) return window.__firebaseAuth;
@@ -2885,9 +3182,9 @@ function LoginPage({ onLogin }) {
     const sched = (published?.teachers || []).find((t) => scheduleNamesMatch(t.name, found.loginName));
     const qrCtx = readTeacherQrClassContext();
     if (qrCtx?.className && published?.teachers?.length) {
-      const canTeach = teacherTeachesClassName(found.loginName, qrCtx.className, published);
+      const canTeach = accountTeachesClassForQr(found, qrCtx.className, published);
       if (!canTeach) {
-        setError('⚠️ Та «' + qrCtx.className + '» ангид хичээл заадаггүй тул энэ QR-аар нэвтрэх боломжгүй.');
+        setError('⚠️ Та «' + qrCtx.className + '» ангид хичээл заадаггүй тул энэ QR-аар нэвтрэх боломжгүй.\n\nХуваарь дээр энэ анги байгаа эсэхийг шалгана уу.');
         return;
       }
     }
@@ -2909,6 +3206,7 @@ function LoginPage({ onLogin }) {
       authMode: 'local_password',
     });
     runSchoolHydrateInBackground(schoolId);
+    reloadTeacherPublishedSchedules(schoolId).catch(() => {});
     setInfo('');
   };
 
@@ -2919,10 +3217,11 @@ function LoginPage({ onLogin }) {
     setLoading(true);
     try {
       let accounts = loadTeacherLoginAccounts();
-      let found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password) === String(password));
+      const pwTrim = String(password || '').trim();
+      let found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password || '').trim() === pwTrim);
       if (!found) {
         accounts = await ensureTeacherLoginAccountsLoaded();
-        found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password) === String(password));
+        found = accounts.find((a) => scheduleNamesMatch(a.loginName, loginName) && String(a.password || '').trim() === pwTrim);
       }
       if (!found) {
         setError('Багшийн нэр эсвэл нууц үг буруу байна.\n\nУдирдлага «Багш нарын бүртгэл»-д нууц үгээ «💾 Хадгалах» дарж хадгалсан эсэхийг шалгана уу.');
@@ -2957,7 +3256,12 @@ function LoginPage({ onLogin }) {
         }
       }
       if (!found) {
-        setError('Нууц үг буруу эсвэл энэ ангид заадаг багш биш байна.\n\nУдирдлага «Багш нарын бүртгэл»-д нууц үгээ «💾 Хадгалах» дарсан эсэхийг шалгана уу.');
+        const authOk = !!(window.__firebaseAuth && window.__firebaseAuth.currentUser);
+        setError(
+          'Нууц үг буруу эсвэл энэ ангид заадаг багш биш байна.\n\n'
+          + 'Удирдлага «Багш нарын бүртгэл»-д нууц үгээ «💾 Хадгалах» дарсан эсэхийг шалгана уу.'
+          + (!authOk ? '\n\n(Утас: Firebase Console → Authentication → Anonymous sign-in идэвхжүүлнэ үү.)' : '')
+        );
         return;
       }
       await finishTeacherLogin(found);
@@ -3493,7 +3797,24 @@ function LoginPage({ onLogin }) {
               <div>
                 <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>Нууц үг</label>
                 <input className="input-field" type="password" placeholder="••••••••" autoFocus={isQrClassLogin}
-                  value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>e.key==='Enter'&&login()}/>
+                  value={password} onChange={e=>setPassword(e.target.value)}
+                  onBlur={() => { if (isQrClassLogin) runQrPasswordMatch(password); }}
+                  onKeyDown={e=>e.key==='Enter'&&login()}/>
+              </div>
+            )}
+            {isQrClassLogin && qrDataLoading && (
+              <div style={{fontSize:12,color:'#64748b',textAlign:'center',padding:'6px 0'}}>
+                ⏳ Сургуулийн өгөгдөл татаж байна...
+              </div>
+            )}
+            {isQrClassLogin && !qrDataLoading && qrMobileIssue === 'auth' && (
+              <div style={{fontSize:12,color:'#b45309',background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,padding:'10px 12px',marginBottom:8}}>
+                📱 Утас дээр Firebase <strong>Anonymous</strong> нэвтрэлт идэвхгүй байж магадгүй. Удирдлага Firebase Console-оос идэвхжүүлнэ үү.
+              </div>
+            )}
+            {isQrClassLogin && !qrDataLoading && qrMobileIssue === 'accounts' && (
+              <div style={{fontSize:12,color:'#b45309',background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,padding:'10px 12px',marginBottom:8}}>
+                📱 Багшийн нууц үг утас руу татагдаагүй байна. Компьютер дээр «Багш нарын бүртгэл» → 💾 Хадгалах хийгээд дахин оролдоно уу.
               </div>
             )}
             {isQrClassLogin && mode === 'login' && (
@@ -3503,7 +3824,7 @@ function LoginPage({ onLogin }) {
                 border:'1.5px solid ' + (qrLoginReady ? '#86efac' : '#e2e8f0'),
                 minHeight:52,
               }}>
-                {qrMatchLoading ? (
+                {qrDataLoading || qrMatchLoading ? (
                   <div style={{fontSize:13,color:'#64748b'}}>⏳ Багшийн нэр шалгаж байна...</div>
                 ) : qrLoginReady ? (
                   <>
@@ -3513,7 +3834,14 @@ function LoginPage({ onLogin }) {
                     </div>
                   </>
                 ) : String(password||'').trim().length >= 6 ? (
-                  <div style={{fontSize:13,color:'#dc2626'}}>⚠️ Нууц үг таарахгүй эсвэл энэ ангид заадаг багш биш</div>
+                  <div style={{fontSize:13,color:'#dc2626'}}>
+                    ⚠️ {qrClassHint || 'Нууц үг таарахгүй эсвэл энэ ангид заадаг багш биш'}
+                    {!qrClassHint && !qrPortalReady && !qrDataLoading ? (
+                      <div style={{fontSize:11,marginTop:6,color:'#b45309'}}>
+                        Өгөгдөл бүрэн татагдаагүй — хуудсыг дахин ачаална уу
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <div style={{fontSize:13,color:'#94a3b8'}}>Нууц үг оруулахад багшийн нэр автоматаар гарна</div>
                 )}
@@ -7951,6 +8279,7 @@ function HuwiariPage() {
         window.dispatchEvent(new CustomEvent('irts_duty_published_update', { detail: stored }));
         // Firestore-д хадгална
         saveToFirestore('irts_duty_published', stored);
+        try { broadcastIrtsDataHydrated('irts_duty_published', stored, getCurrentSchoolId()); } catch (_) {}
         setToast('✅ Жижүүрийн Хуваарь нийтлэгдлээ!');
         setTimeout(() => setToast(''), 5000);
 
@@ -7965,11 +8294,7 @@ function HuwiariPage() {
         window.dispatchEvent(new CustomEvent('irts_lesson_published_update', { detail: data }));
         // Firestore-д хадгална
         saveToFirestore('irts_published_huwiari', data);
-
-        // ── Шинэ хуваарь нийтлэгдэхэд хуучин жижүүрийн хуваарийг БҮРЭН цэвэрлэнэ ──
-        try { localStorage.setItem('irts_duty_published', JSON.stringify({})); } catch(err) {}
-        window.dispatchEvent(new CustomEvent('irts_duty_published_update', { detail: {} }));
-        saveToFirestore('irts_duty_published', {});
+        try { broadcastIrtsDataHydrated('irts_published_huwiari', data, getCurrentSchoolId()); } catch (_) {}
 
         // ── Хуваарьт байгаа ангиудаар irts_classes шинэчлэх (нэр таарвал хуучин id — ирц/сурагч холбоос алдахгүй) ──
         try {
@@ -8029,7 +8354,7 @@ function HuwiariPage() {
           localStorage.setItem('irts_classes', JSON.stringify(newClasses));
           window.dispatchEvent(new CustomEvent('irts_classes_update', { detail: newClasses }));
           saveToFirestore('irts_classes', newClasses);
-          setToast(`✅ Хичээлийн Хуваарь нийтлэгдлээ! · ${newClasses.length} анги (нэр таарвал ирцийн classId хадгалагдсан) · жижүүрийн хуваарь цэвэрлэгдлээ`);
+          setToast(`✅ Хичээлийн Хуваарь нийтлэгдлээ! · ${newClasses.length} анги (нэр таарвал ирцийн classId хадгалагдсан)`);
         } catch(autoErr) {
           console.warn('Auto-class sync error:', autoErr);
           setToast('✅ Хичээлийн Хуваарь нийтлэгдлээ!');
@@ -8605,6 +8930,7 @@ function AdminDutyBuilder({ canEdit, confirmPublish: extConfirm=false, onConfirm
       };
       // Dispatch custom event so DutyScheduleViewer (Жижүүр) updates instantly
       window.dispatchEvent(new CustomEvent('irts_duty_published_update', { detail: next }));
+      try { broadcastIrtsDataHydrated('irts_duty_published', next, getCurrentSchoolId()); } catch (_) {}
       // Firestore-д бас хадгална
       fsSet('irts_duty_published', next).catch(err => console.warn('fsSet duty error', err));
       return next;
@@ -8996,40 +9322,29 @@ function AdminDutyBuilder({ canEdit, confirmPublish: extConfirm=false, onConfirm
 // ════════════════════════════════════════════
 function TeacherSchedulePage({ user, setPage }) {
   const [schedSubTab, setSchedSubTab] = React.useState('lesson');
-  const [publishedLesson, setPublishedLesson] = React.useState(() => ls.get('irts_published_huwiari', null));
-  const [publishedDuty,   setPublishedDuty]   = React.useState(() => ls.get('irts_duty_published', {}));
+  const [publishedLesson] = useLS('irts_published_huwiari', null);
+  const [publishedDuty] = useLS('irts_duty_published', {});
+  const [schedReloading, setSchedReloading] = React.useState(false);
   const [selectedMonth,   setSelectedMonth]   = React.useState('');
   const teacherInfoMap = useTeacherInfoMap(publishedLesson?.teachers);
 
   React.useEffect(() => {
-    const trySubscribe = () => {
-      const { doc, onSnapshot } = getFS();
-      const db = getDB();
-      // ✅ MULTI-TENANCY: school-scoped path ашиглана
-      const schoolId = getCurrentSchoolId();
-      const u1 = onSnapshot(doc(db,'schools',schoolId,'irts_data','irts_published_huwiari'), snap => {
-        if (snapExists(snap)) { const v=snap.data().value; if(v!==undefined){setPublishedLesson(v);ls.set('irts_published_huwiari',v);} }
-      });
-      const u2 = onSnapshot(doc(db,'schools',schoolId,'irts_data','irts_duty_published'), snap => {
-        if (snapExists(snap)) { const v=snap.data().value; if(v!==undefined){setPublishedDuty(v);ls.set('irts_duty_published',v);} }
-      });
-      return () => { u1(); u2(); };
-    };
-    if (window.__firebaseReady) return trySubscribe();
-    const h = () => trySubscribe();
-    window.addEventListener('firebase-ready', h, {once:true});
-    return () => window.removeEventListener('firebase-ready', h);
-  }, []);
+    let cancelled = false;
+    (async () => {
+      setSchedReloading(true);
+      try {
+        const sid = getCurrentSchoolId() || user?.schoolId || schoolIdHelpers.load();
+        await reloadTeacherPublishedSchedules(sid);
+      } catch (e) {
+        console.warn('[TeacherSchedulePage] reload', e);
+      } finally {
+        if (!cancelled) setSchedReloading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.schoolId]);
 
-  React.useEffect(() => {
-    const onL = e => setPublishedLesson(e.detail);
-    const onD = e => setPublishedDuty(e.detail);
-    window.addEventListener('irts_lesson_published_update', onL);
-    window.addEventListener('irts_duty_published_update',   onD);
-    return () => { window.removeEventListener('irts_lesson_published_update',onL); window.removeEventListener('irts_duty_published_update',onD); };
-  }, []);
-
-  const dutyMonths = Object.keys(publishedDuty).sort();
+  const dutyMonths = Object.keys(publishedDuty || {}).sort();
   React.useEffect(() => {
     if (dutyMonths.length && !selectedMonth) setSelectedMonth(dutyMonths[dutyMonths.length-1]);
   }, [dutyMonths.join(',')]);
@@ -9534,9 +9849,19 @@ function TeacherSchedulePage({ user, setPage }) {
       <div className="card" style={{padding:'20px 24px'}}>
         <h1 style={{fontSize:22,fontWeight:800,color:'#1e293b',marginBottom:4}}>📅 Хуваарь</h1>
         <p style={{color:'#94a3b8',fontSize:13}}>Удирдлагаас нийтэлсэн хуваарь</p>
-        <div style={{display:'flex',gap:8,marginTop:14}}>
+        {schedReloading && (
+          <p style={{color:'#64748b',fontSize:12,marginTop:8}}>⏳ Хуваарь татаж байна...</p>
+        )}
+        <div style={{display:'flex',gap:8,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
           <button style={tabSt(schedSubTab==='lesson')} onClick={()=>setSchedSubTab('lesson')}>📋 Хичээлийн хуваарь</button>
           <button style={tabSt(schedSubTab==='duty')}   onClick={()=>setSchedSubTab('duty')}>👮 Жижүүрийн хуваарь</button>
+          <button
+            type="button"
+            onClick={() => reloadTeacherPublishedSchedules(getCurrentSchoolId() || user?.schoolId)}
+            style={{padding:'6px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'#fff',fontSize:12,fontWeight:600,cursor:'pointer',color:'#475569'}}
+          >
+            🔄 Шинэчлэх
+          </button>
         </div>
       </div>
       <div className="card" style={{padding:'20px'}}>
