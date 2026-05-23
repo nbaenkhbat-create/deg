@@ -24,16 +24,16 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-functions.js"></script>
 
     <script>
-      // Firebase Config (edumon2)
+      // Firebase Config (qr-deg) — Console → Project settings → Your apps
       const firebaseConfig = {
-        apiKey: "AIzaSyBVtA9hbq44gHdeklLM-ZAZtejSLI57pgI",
-        authDomain: "edumon2.firebaseapp.com",
-        databaseURL: "https://edumon2-default-rtdb.asia-southeast1.firebasedatabase.app",
-        projectId: "edumon2",
-        storageBucket: "edumon2.firebasestorage.app",
-        messagingSenderId: "216917082932",
-        appId: "1:216917082932:web:bfff47531d907672969b61",
-        measurementId: "G-0B0QLC75X4"
+        apiKey: "AIzaSyD9U-dLVOCUXAEi9XBhj-bUyiZX_ewZL3w",
+        authDomain: "qr-deg.firebaseapp.com",
+        databaseURL: "https://qr-deg-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "qr-deg",
+        storageBucket: "qr-deg.firebasestorage.app",
+        messagingSenderId: "41780845072",
+        appId: "1:41780845072:web:e9a9c4273b78f3ee5d8895",
+        measurementId: "G-KC8FFZ59GN"
       };
 
       try {
@@ -58,8 +58,26 @@
           setDoc: (ref, data, opts) => ref.set(data, opts || {}),
           onSnapshot: (ref, onNext, onErr) => ref.onSnapshot(onNext, onErr),
         };
+        // Realtime Database (Arduino ирц, fp_mappings)
+        try {
+          const _rtdb = firebase.database();
+          window.__rtdb = _rtdb;
+          _rtdb.ref('.info/connected').on('value', (snap) => {
+            const connected = snap.val() === true;
+            window.__rtdbStatus = connected ? 'live' : 'connecting';
+            try {
+              window.dispatchEvent(new CustomEvent('rtdb-connection-changed', { detail: { connected } }));
+            } catch (_) {}
+          });
+          console.log('[Firebase] RTDB initialized:', firebaseConfig.databaseURL);
+        } catch (rtdbErr) {
+          console.warn('[Firebase] RTDB init failed (databaseURL эсвэл RTDB идэвхгүй?):', rtdbErr);
+          window.__rtdb = null;
+          window.__rtdbStatus = 'error';
+        }
         window.__firebaseReady = true;
         window.dispatchEvent(new Event('firebase-ready'));
+        console.log('[Firebase] ready — project:', firebaseConfig.projectId);
       } catch (e) {
         console.error('Firebase initialization failed:', e);
         window.__firebaseReady = false;
