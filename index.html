@@ -10,7 +10,7 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b2';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b3';</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -351,7 +351,28 @@
     </style>
 </head>
 <body>
+<div id="boot-screen" style="position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f1f5f9;font-family:system-ui,sans-serif;">
+  <div style="font-size:22px;font-weight:800;color:#1e293b;margin-bottom:8px;">SMARTDUTY</div>
+  <div style="font-size:14px;color:#64748b;">Ачаалж байна...</div>
+  <div id="boot-err" style="display:none;max-width:320px;margin-top:16px;padding:12px 16px;background:#fee2e2;color:#991b1b;border-radius:8px;font-size:13px;text-align:center;"></div>
+</div>
 <div id="root"></div>
+<script>
+  window.addEventListener('error', function(ev) {
+    var el = document.getElementById('boot-err');
+    var scr = document.getElementById('boot-screen');
+    if (el) { el.style.display = 'block'; el.textContent = (ev.message || 'JavaScript алдаа') + ' — F12 Console шалгана уу'; }
+    if (scr) scr.style.display = 'flex';
+  });
+  setTimeout(function() {
+    var r = document.getElementById('root');
+    var scr = document.getElementById('boot-screen');
+    if (scr && r && !r.children.length) {
+      var el = document.getElementById('boot-err');
+      if (el) { el.style.display = 'block'; el.textContent = 'Ачаалах хэт удаан — интернет/CDN шалгаад дахин ачаална уу (Ctrl+Shift+R).'; }
+    }
+  }, 45000);
+</script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useCallback, useRef, useMemo } = React;
 
@@ -3048,8 +3069,9 @@ function LoginPage({ onLogin }) {
       try {
         const ctx = readTeacherQrClassContext();
         const sid = String(
-          ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : ''
-        ).trim() || String(getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+          (ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : '')
+          || getCurrentSchoolId() || schoolIdHelpers.load() || ''
+        ).trim();
         const pack = await prefetchQrTeacherPortalData(sid);
         if (cancelled) return;
         if (!pack.authOk) setQrMobileIssue('auth');
@@ -3086,8 +3108,10 @@ function LoginPage({ onLogin }) {
     setQrClassHint('');
     try {
       const ctx = readTeacherQrClassContext();
-      const sid = String(ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : '')
-        || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+      const sid = String(
+        (ctx?.schoolId ? (schoolIdHelpers.toSlug(ctx.schoolId) || ctx.schoolId) : '')
+        || getCurrentSchoolId() || schoolIdHelpers.load() || ''
+      ).trim();
       const pack = await prefetchQrTeacherPortalData(sid);
       const published = pack.published;
       const accounts = pack.accounts;
@@ -21921,6 +21945,8 @@ function App() {
       console.error('ReactDOM.createRoot / render олдсонгүй');
       el.textContent = 'React DOM ачаалагдаагүй байна.';
     }
+    var boot = document.getElementById('boot-screen');
+    if (boot) boot.style.display = 'none';
   } catch (err) {
     console.error('React mount алдаа:', err);
     el.innerHTML = '<div class="text-center p-10 text-xl text-red-600">Ачаалахад алдаа гарлаа. Консол шалгаад хуудсыг дахин ачаална уу.</div>';
