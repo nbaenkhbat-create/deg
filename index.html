@@ -971,10 +971,29 @@ const snapExists = (snap) => {
   return typeof snap.exists === 'function' ? snap.exists() : !!snap.exists;
 };
 
-async function fsGet(key, def, schoolIdOverride) {
+/** Багш QR нэвтрэх — compat SDK-аар шууд унших (утас дээр илүү найдвартай) */
+async function readSchoolIrtsDataCompat(key, schoolIdOverride) {
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  if (!sid || !key) return undefined;
   try {
+    const db2 = (window.__firebaseCompat || (typeof firebase !== 'undefined' ? firebase : null))?.firestore?.();
+    if (!db2) return undefined;
+    const snap = await db2.collection('schools').doc(sid).collection('irts_data').doc(key).get();
+    if (snap.exists && snap.data() && Object.prototype.hasOwnProperty.call(snap.data(), 'value')) {
+      return snap.data().value;
+    }
+  } catch (e) {
+    console.warn('[readSchoolIrtsDataCompat]', key, sid, e.code || e.message);
+  }
+  return undefined;
+}
+
+async function fsGet(key, def, schoolIdOverride) {
+  const schoolId = schoolIdOverride || getCurrentSchoolId();
+  try {
+    const compatVal = await readSchoolIrtsDataCompat(key, schoolId);
+    if (compatVal !== undefined) return compatVal;
     const { doc, getDoc } = getFS();
-    const schoolId = schoolIdOverride || getCurrentSchoolId();
     const snap = await getDoc(doc(getDB(), 'schools', schoolId, 'irts_data', key));
     if (snapExists(snap)) {
       const val = snap.data().value;
@@ -991,6 +1010,8 @@ async function fsGet(key, def, schoolIdOverride) {
     return def;
   } catch(e) {
     console.warn('fsGet error', key, e);
+    const compatVal = await readSchoolIrtsDataCompat(key, schoolId);
+    if (compatVal !== undefined) return compatVal;
     return def;
   }
 }
@@ -1911,10 +1932,12 @@ function mergeTeacherLoginAccountLists(localList, remoteList) {
 }
 
 /** Firestore + localStorage — багшийн нууц үгийн жагсаалт (нэвтрэхээс өмнө дуудна) */
-async function ensureTeacherLoginAccountsLoaded() {
+async function ensureTeacherLoginAccountsLoaded(schoolIdOverride) {
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
   let local = loadTeacherLoginAccounts();
   try {
-    const fromFs = await fsGet(TEACHER_LOGIN_LS, null);
+    let fromFs = await readSchoolIrtsDataCompat(TEACHER_LOGIN_LS, sid);
+    if (!Array.isArray(fromFs)) fromFs = await fsGet(TEACHER_LOGIN_LS, null, sid || undefined);
     if (Array.isArray(fromFs)) {
       local = mergeTeacherLoginAccountLists(local, fromFs);
       try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local)); } catch (_) {}
@@ -2009,28 +2032,71 @@ function getPublishedHuwiariLocal() {
   }
 }
 
+let _teacherPortalAuthPromise = null;
+/** Багш QR — утас дээр Firestore уншихын тулд anonymous auth (Console → Authentication → Anonymous идэвхжүүлнэ) */
+async function ensureFirebaseAuthForTeacherPortal() {
+  try {
+    const auth = window.__firebaseAuth
+      || (window.__firebaseCompat && typeof window.__firebaseCompat.auth === 'function' ? window.__firebaseCompat.auth() : null);
+    if (!auth) return false;
+    if (auth.currentUser) return true;
+    if (_teacherPortalAuthPromise) return _teacherPortalAuthPromise;
+    _teacherPortalAuthPromise = auth.signInAnonymously()
+      .then(() => true)
+      .catch((e) => {
+        console.warn('[teacher-portal] anonymous auth', e.code || e.message);
+        _teacherPortalAuthPromise = null;
+        return false;
+      });
+    return _teacherPortalAuthPromise;
+  } catch (e) {
+    console.warn('[teacher-portal] auth', e);
+    return false;
+  }
+}
+
+/** Утас/шинэ төхөөрөмж — хуваарийг Firebase-ээс татна */
+async function ensurePublishedHuwiariForSchool(schoolIdOverride) {
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  const local = getPublishedHuwiariLocal();
+  if (local?.teachers?.length && !schoolIdOverride) return local;
+  if (!sid) return local;
+  try {
+    let fromFs = await readSchoolIrtsDataCompat('irts_published_huwiari', sid);
+    if (!fromFs || typeof fromFs !== 'object') fromFs = await fsGet('irts_published_huwiari', null, sid);
+    if (fromFs && typeof fromFs === 'object') {
+      mirrorIrtsValueToLocal('irts_published_huwiari', fromFs);
+      return fromFs;
+    }
+  } catch (e) {
+    console.warn('[huwiari] Firestore load', sid, e);
+  }
+  return local;
+}
+
+function filterTeacherAccountsByQrClass(accounts, password, className, published) {
+  const pw = String(password || '').trim();
+  const cls = String(className || '').trim();
+  if (!pw || pw.length < 6 || !cls) return [];
+  const list = Array.isArray(accounts) ? accounts : [];
+  const hasSchedule = !!(published?.teachers?.length);
+  return list.filter((a) => {
+    if (String(a.password) !== pw) return false;
+    if (!hasSchedule) return true;
+    return teacherTeachesClassName(a.loginName, cls, published);
+  });
+}
+
 /** QR анги + нууц үг → тухайн ангид заадаг багшийн бүртгэл */
-async function findTeacherAccountsForQrClass(className, password) {
+async function findTeacherAccountsForQrClass(className, password, schoolIdOverride) {
   const pw = String(password || '').trim();
   const cls = String(className || '').trim();
   if (!cls || pw.length < 6) return [];
-  let published = getPublishedHuwiariLocal();
-  let accounts = loadTeacherLoginAccounts();
-  const filterMatches = () => accounts.filter((a) =>
-    String(a.password) === pw && teacherTeachesClassName(a.loginName, cls, published)
-  );
-  let matches = filterMatches();
-  if (!matches.length) {
-    accounts = await ensureTeacherLoginAccountsLoaded();
-    if (!published) {
-      try {
-        const fromFs = await fsGet('irts_published_huwiari', null);
-        if (fromFs) published = fromFs;
-      } catch (_) {}
-    }
-    matches = filterMatches();
-  }
-  return matches;
+  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  if (sid) setCurrentSchoolId(sid);
+  const published = await ensurePublishedHuwiariForSchool(sid);
+  const accounts = await ensureTeacherLoginAccountsLoaded();
+  return filterTeacherAccountsByQrClass(accounts, pw, cls, published);
 }
 
 function getTeacherScheduleClassLabels(teacherName, publishedHuwiari) {
@@ -2066,7 +2132,23 @@ function getTeacherScheduleClassLabels(teacherName, publishedHuwiari) {
 function teacherTeachesClassName(teacherName, className, publishedHuwiari) {
   if (!teacherName || !className) return false;
   const want = normClassLabelKey(className);
-  return getTeacherScheduleClassKeys(teacherName, publishedHuwiari).has(want);
+  const keys = getTeacherScheduleClassKeys(teacherName, publishedHuwiari);
+  if (keys.has(want)) return true;
+  const fakeRow = { name: className };
+  if (!publishedHuwiari?.teachers) return false;
+  const t = publishedHuwiari.teachers.find((te) => scheduleNamesMatch(te.name, teacherName));
+  if (!t) return false;
+  if (t.homeroom && scheduleCellMatchesClass(t.homeroom, fakeRow)) return true;
+  let hit = false;
+  SCHEDULE_DAYS_K.forEach((day) => {
+    SCHEDULE_SHIFTS_K.forEach((shift) => {
+      for (let p = 1; p <= 7; p++) {
+        const val = (t.schedule?.[day]?.[shift]?.[p]?.val || '').trim();
+        if (val && scheduleCellMatchesClass(val, fakeRow)) hit = true;
+      }
+    });
+  });
+  return hit;
 }
 
 function findClassRowByLabel(className, allClasses) {
@@ -3547,7 +3629,6 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
     teacher: [
       { id:'attendance', label:'Ирц бүртгэл',      icon:'📋' },
       { id:'class-attendance', label:'Багшийн журнал', icon:'🏫' },
-      { id:'search',     label:'Хайлт & Статистик', icon:'🔍' },
       { id:'teacher-schedule', label:'Хуваарь',     icon:'📅' },
       { id:'deg-devter',    label:'Дэг дэвтэр',       icon:'📒' },
     ],
@@ -21394,6 +21475,10 @@ function App() {
 
   React.useEffect(() => {
     if (!effectiveUser) return;
+    if (effectiveUser.role === 'teacher' && page === 'search') {
+      setPage(defaultPageForRole('teacher'));
+      return;
+    }
     if (!page) setPage(defaultPageForRole(effectiveUser?.role));
   }, [effectiveUser, page]);
 
@@ -21407,7 +21492,6 @@ function App() {
     teacher: [
       {id:'attendance',label:'📋 Ирц бүртгэл'},
       {id:'class-attendance',label:'🏫 Багшийн журнал'},
-      {id:'search',label:'🔍 Хайлт & Статистик'},
       {id:'teacher-schedule',label:'📅 Хуваарь'},
       {id:'deg-devter',label:'📒 Дэг хэрэгжилт'},
       {id:'shagnalpage',label:'🏆 Шагнал'},
