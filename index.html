@@ -10,7 +10,7 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b5';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b7';</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -405,30 +405,122 @@
                 border-bottom: 1px solid #bfdbfe;
             }
             .deg-m-period-head.is-mine { background: linear-gradient(135deg, #fef9c3, #fde68a); border-bottom-color: #fcd34d; }
+            .deg-m-sticky-bar {
+                position: sticky;
+                top: 0;
+                z-index: 40;
+                background: rgba(255,255,255,0.97);
+                backdrop-filter: blur(8px);
+                -webkit-backdrop-filter: blur(8px);
+                padding: 8px 0 6px;
+                margin: 0 -2px 8px;
+                border-bottom: 1px solid #e2e8f0;
+            }
+            .deg-m-shift-label {
+                font-size: 11px;
+                font-weight: 800;
+                padding: 6px 10px;
+                border-radius: 8px;
+                margin: 8px 0 4px;
+            }
             .deg-m-col-grid {
                 display: grid;
-                grid-template-columns: 1fr 1fr;
+                grid-template-columns: 1fr;
                 gap: 8px;
                 padding: 10px;
             }
             .deg-m-col-btn {
-                min-height: 52px;
-                padding: 8px 10px;
+                min-height: 56px;
+                padding: 10px 12px;
                 border-radius: 12px;
                 border: 1.5px solid #e2e8f0;
                 background: #f8fafc;
                 text-align: left;
                 cursor: pointer;
                 -webkit-tap-highlight-color: transparent;
+                touch-action: manipulation;
                 display: flex;
-                flex-direction: column;
-                justify-content: center;
-                gap: 4px;
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                width: 100%;
             }
-            .deg-m-col-btn.has-val { font-weight: 700; }
+            .deg-m-col-btn.has-val {
+                font-weight: 700;
+                border-color: #bfdbfe;
+                background: #fff;
+            }
+            .deg-m-col-btn:active { transform: scale(0.98); }
             .deg-m-col-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-            .deg-m-col-label { font-size: 10px; font-weight: 700; line-height: 1.25; color: #64748b; }
-            .deg-m-col-val { font-size: 13px; font-weight: 800; line-height: 1.2; word-break: break-word; }
+            .deg-m-col-text { flex: 1; min-width: 0; }
+            .deg-m-col-label { font-size: 12px; font-weight: 800; line-height: 1.25; color: #334155; }
+            .deg-m-col-val { font-size: 12px; font-weight: 700; line-height: 1.3; word-break: break-word; color: #64748b; margin-top: 2px; }
+            .deg-m-col-badge {
+                flex-shrink: 0;
+                min-width: 28px;
+                height: 28px;
+                padding: 0 8px;
+                border-radius: 99px;
+                font-size: 12px;
+                font-weight: 900;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .deg-m-period-head-btn {
+                width: 100%;
+                border: none;
+                background: transparent;
+                padding: 0;
+                text-align: left;
+                cursor: pointer;
+                -webkit-tap-highlight-color: transparent;
+            }
+            .deg-m-bottom-bar {
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 90;
+                padding: 10px 10px max(10px, env(safe-area-inset-bottom, 0px));
+                background: linear-gradient(180deg, rgba(255,255,255,0) 0%, #fff 28%);
+                border-top: 1px solid #e2e8f0;
+                display: flex;
+                gap: 8px;
+                box-shadow: 0 -4px 20px rgba(15,23,42,0.08);
+            }
+            .deg-m-bottom-bar button { flex: 1; min-height: 48px; border-radius: 12px; font-weight: 800; font-size: 13px; }
+            .deg-devter-page.deg-has-m-bottom { padding-bottom: 72px !important; }
+            .deg-bulk-overlay-mobile { align-items: flex-end !important; padding: 0 !important; }
+            .deg-bulk-sheet-mobile {
+                width: 100% !important;
+                max-width: 100% !important;
+                max-height: 94dvh !important;
+                border-radius: 16px 16px 0 0 !important;
+                margin: 0 !important;
+            }
+            .deg-bulk-grid-mobile { grid-template-columns: 1fr !important; }
+            .deg-picker-search {
+                width: 100%;
+                min-height: 44px;
+                font-size: 15px;
+                padding: 10px 12px;
+                border: 1.5px solid #e2e8f0;
+                border-radius: 10px;
+                margin-bottom: 10px;
+                box-sizing: border-box;
+            }
+            .deg-picker-student-row {
+                min-height: 54px !important;
+                padding: 12px 14px !important;
+            }
+            .deg-picker-footer {
+                flex-shrink: 0;
+                padding: 12px 16px max(14px, env(safe-area-inset-bottom, 0px));
+                border-top: 1px solid #e2e8f0;
+                background: #fff;
+            }
             .deg-devter-page .deg-table-wrap { display: none !important; }
             .deg-devter-page .deg-mobile-panel { display: block !important; }
             .deg-devter-page .deg-meta-input {
@@ -2644,6 +2736,77 @@ function chunkArrayForPrint(arr, size) {
   if (!list.length) return [];
   const out = [];
   for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+function classQrPrintSlotKey(classRow) {
+  const id = String(classRow?.id || '').trim();
+  if (id) return 'id:' + id;
+  return 'lbl:' + normClassLabelKey(canonicalMainClassDisplayName(classRow) || classRow?.name || '');
+}
+
+/** qrcodejs — олон QR зэрэг үүсгэхэд canvas зөвхөн нэг div-д очдог алдааг засна */
+function renderQrCodeToElement(container, text, size) {
+  if (!container || !window.QRCode || !text) return false;
+  const px = Number(size) || 128;
+  container.innerHTML = '';
+  const tmp = document.createElement('div');
+  tmp.setAttribute('aria-hidden', 'true');
+  tmp.style.cssText = 'position:fixed;left:-20000px;top:0;width:' + px + 'px;height:' + px + 'px;overflow:hidden;';
+  document.body.appendChild(tmp);
+  try {
+    new window.QRCode(tmp, {
+      text: String(text),
+      width: px,
+      height: px,
+      colorDark: '#0f172a',
+      colorLight: '#ffffff',
+      correctLevel: window.QRCode.CorrectLevel.M,
+    });
+    const canvas = tmp.querySelector('canvas');
+    if (canvas) {
+      const img = document.createElement('img');
+      img.src = canvas.toDataURL('image/png');
+      img.width = px;
+      img.height = px;
+      img.alt = 'QR';
+      img.style.display = 'block';
+      img.style.width = px + 'px';
+      img.style.height = px + 'px';
+      container.appendChild(img);
+      return true;
+    }
+    const libImg = tmp.querySelector('img');
+    if (libImg && libImg.src) {
+      const img = document.createElement('img');
+      img.src = libImg.src;
+      img.width = px;
+      img.height = px;
+      img.alt = 'QR';
+      img.style.display = 'block';
+      img.style.width = px + 'px';
+      img.style.height = px + 'px';
+      container.appendChild(img);
+      return true;
+    }
+  } catch (_) {}
+  finally {
+    if (tmp.parentNode) tmp.parentNode.removeChild(tmp);
+  }
+  return false;
+}
+
+function dedupeClassesForQrPrint(classList) {
+  const seen = new Set();
+  const out = [];
+  (classList || []).forEach((c) => {
+    const labelKey = normClassLabelKey(canonicalMainClassDisplayName(c) || c.name || '');
+    const slot = classQrPrintSlotKey(c);
+    const dedupeKey = labelKey || slot;
+    if (!dedupeKey || seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    out.push(c);
+  });
   return out;
 }
 
@@ -11988,59 +12151,42 @@ function ClassQRPage({ user }) {
     });
   }, [qrClasses, classSearch]);
 
-  const qrPrintPages = React.useMemo(() => chunkArrayForPrint(qrClasses, 4), [qrClasses]);
+  const qrClassesForPrint = React.useMemo(() => dedupeClassesForQrPrint(qrClasses), [qrClasses]);
+  const qrPrintPages = React.useMemo(() => chunkArrayForPrint(qrClassesForPrint, 4), [qrClassesForPrint]);
   const printBrand = String(user?.schoolName || user?.name || 'SMARTDUTY').trim() || 'SMARTDUTY';
   const schoolQrUrl = React.useMemo(() => buildSchoolPickerQrWebUrl(schoolId), [schoolId]);
 
+  const renderAllPrintQrs = React.useCallback(async () => {
+    if (!window.QRCode) return;
+    renderQrCodeToElement(schoolQrRef.current, schoolQrUrl, 160);
+    renderQrCodeToElement(schoolPrintQrRef.current, schoolQrUrl, 240);
+    for (const c of qrClassesForPrint) {
+      const slot = classQrPrintSlotKey(c);
+      const el = printQrRefs.current[slot];
+      if (!el) continue;
+      renderQrCodeToElement(el, buildClassQrWebUrl(c, schoolId), 220);
+      await new Promise((r) => requestAnimationFrame(() => r()));
+    }
+  }, [qrClassesForPrint, schoolId, schoolQrUrl]);
+
   React.useEffect(() => {
     if (!window.QRCode) return;
-    const renderQr = (el, url, size) => {
-      if (!el) return;
-      el.innerHTML = '';
-      try {
-        new window.QRCode(el, {
-          text: url, width: size, height: size,
-          colorDark: '#0f172a', colorLight: '#ffffff',
-          correctLevel: window.QRCode.CorrectLevel.M,
-        });
-      } catch (_) {}
-    };
-    const t = setTimeout(() => {
-      renderQr(schoolQrRef.current, schoolQrUrl, 160);
-      renderQr(schoolPrintQrRef.current, schoolQrUrl, 240);
-    }, 100);
+    const t = setTimeout(() => { renderAllPrintQrs(); }, 150);
     return () => clearTimeout(t);
-  }, [schoolQrUrl]);
+  }, [renderAllPrintQrs]);
 
   React.useEffect(() => {
     if (!window.QRCode) return;
     const t = setTimeout(() => {
       filteredQrClasses.forEach((c) => {
-        const el = qrRefs.current[c.id];
+        const slot = classQrPrintSlotKey(c);
+        const el = qrRefs.current[slot] || qrRefs.current[c.id];
         if (!el) return;
-        const url = buildClassQrWebUrl(c, schoolId);
-        el.innerHTML = '';
-        try { new window.QRCode(el, { text: url, width: 128, height: 128, colorDark: '#1e293b', colorLight: '#ffffff' }); } catch (_) {}
+        renderQrCodeToElement(el, buildClassQrWebUrl(c, schoolId), 128);
       });
     }, 80);
     return () => clearTimeout(t);
   }, [filteredQrClasses, schoolId]);
-
-  React.useEffect(() => {
-    if (!window.QRCode || !qrClasses.length) return;
-    const t = setTimeout(() => {
-      qrClasses.forEach((c) => {
-        const el = printQrRefs.current[c.id];
-        if (!el) return;
-        const url = buildClassQrWebUrl(c, schoolId);
-        el.innerHTML = '';
-        try {
-          new window.QRCode(el, { text: url, width: 220, height: 220, colorDark: '#0f172a', colorLight: '#ffffff', correctLevel: window.QRCode.CorrectLevel.M });
-        } catch (_) {}
-      });
-    }, 120);
-    return () => clearTimeout(t);
-  }, [qrClasses, schoolId]);
 
   const endPrintMode = () => {
     setTimeout(() => {
@@ -12048,26 +12194,34 @@ function ClassQRPage({ user }) {
     }, 600);
   };
 
-  const handlePrintAllQr = () => {
-    if (!qrClasses.length) {
+  const handlePrintAllQr = async () => {
+    if (!qrClassesForPrint.length) {
       alert('Хэвлэх QR байхгүй. Эхлээд хичээлийн хуваарь нийтлэнэ үү.');
       return;
     }
     document.body.classList.add('print-class-qr-only');
     document.body.classList.remove('print-school-qr-only');
-    setTimeout(() => {
-      try { window.print(); } catch (_) { alert('Хэвлэгч сонгох цонх нээгдэхгүй байна.'); }
-      endPrintMode();
-    }, 350);
+    try {
+      await renderAllPrintQrs();
+      await new Promise((r) => setTimeout(r, 120));
+      window.print();
+    } catch (_) {
+      alert('Хэвлэгч сонгох цонх нээгдэхгүй байна.');
+    }
+    endPrintMode();
   };
 
-  const handlePrintSchoolQr = () => {
+  const handlePrintSchoolQr = async () => {
     document.body.classList.add('print-school-qr-only');
     document.body.classList.remove('print-class-qr-only');
-    setTimeout(() => {
-      try { window.print(); } catch (_) { alert('Хэвлэгч сонгох цонх нээгдэхгүй байна.'); }
-      endPrintMode();
-    }, 300);
+    try {
+      renderQrCodeToElement(schoolPrintQrRef.current, schoolQrUrl, 240);
+      await new Promise((r) => setTimeout(r, 80));
+      window.print();
+    } catch (_) {
+      alert('Хэвлэгч сонгох цонх нээгдэхгүй байна.');
+    }
+    endPrintMode();
   };
 
   const copySchoolQrLink = () => {
@@ -12144,7 +12298,7 @@ function ClassQRPage({ user }) {
               🖨️ Бүх QR хэвлэх
             </button>
             <span style={{fontSize:12,color:'#64748b',lineHeight:1.45}}>
-              A4 цаас (босоо) · нэг хуудсанд <strong>4</strong> QR (A6 хэмжээ) · нийт <strong>{qrClasses.length}</strong> анги · <strong>{qrPrintPages.length}</strong> хуудас
+              A4 цаас (босоо) · нэг хуудсанд <strong>4</strong> QR (A6) · нийт <strong>{qrClassesForPrint.length}</strong> анги · <strong>{qrPrintPages.length}</strong> хуудас
             </span>
           </div>
         )}
@@ -12200,11 +12354,15 @@ function ClassQRPage({ user }) {
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:16}}>
           {filteredQrClasses.map((c) => {
             const label = canonicalMainClassDisplayName(c) || c.name;
+            const slot = classQrPrintSlotKey(c);
             return (
-              <div key={c.id} className="card" style={{padding:16,textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
+              <div key={slot} className="card" style={{padding:16,textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:10}}>
                 <div style={{fontWeight:800,fontSize:18,color:'#1e293b'}}>{label}</div>
                 <div
-                  ref={(el) => { if (el) qrRefs.current[c.id] = el; }}
+                  ref={(el) => {
+                    if (el) qrRefs.current[slot] = el;
+                    else delete qrRefs.current[slot];
+                  }}
                   style={{padding:8,border:'1.5px solid #e5e7eb',borderRadius:12,background:'#fff',minHeight:128,minWidth:128,display:'flex',alignItems:'center',justifyContent:'center'}}
                 />
                 <button type="button" onClick={() => copyLink(c)}
@@ -12235,13 +12393,17 @@ function ClassQRPage({ user }) {
           <div key={'qr-page-' + pageIdx} className="qr-print-page">
             {pageClasses.map((c) => {
               const label = canonicalMainClassDisplayName(c) || c.name;
+              const slot = classQrPrintSlotKey(c);
               return (
-                <div key={c.id} className="qr-print-sheet">
+                <div key={slot + '-p' + pageIdx} className="qr-print-sheet">
                   <div className="qr-print-brand">{printBrand}</div>
                   <div className="qr-print-class">{label}</div>
                   <div
                     className="qr-print-code"
-                    ref={(el) => { if (el) printQrRefs.current[c.id] = el; }}
+                    ref={(el) => {
+                      if (el) printQrRefs.current[slot] = el;
+                      else delete printQrRefs.current[slot];
+                    }}
                   />
                   <div className="qr-print-hint">Багш утасны QR уншуулагчоор уншуулж, нууц үгээр нэвтэрнэ</div>
                 </div>
@@ -12618,6 +12780,13 @@ function DisciplinePage({ user }) {
   const isTeacherView = user?.role === 'teacher';
   const isNarrow = useIsNarrowScreen(768);
   const [mobilePeriod, setMobilePeriod] = useState(1);
+  const [mobileExpandedPeriods, setMobileExpandedPeriods] = useState(() => new Set([1]));
+  const mobilePeriodRefs = React.useRef({});
+  const COL_SHORT = {
+    late:'Хоцорсон', sick:'Өвчтэй', excusedFull:'Чөлөөтэй', excused:'Цагаар чөлөөтэй',
+    absent:'Тасалсан', phone:'Гар утас', activity:'Идэвх', behavior:'Хандлага',
+    clean:'Цэвэрлэгээ', uniform:'Дүрэмт хувцас', hygiene:'Ариун цэвэр', homework:'Гэрийн даалгавар',
+  };
   const [allClasses, setAllClasses]  = useLS('irts_classes',  []);
   const [students] = useLS('irts_students', []);
   const [degData, setDegData] = useLS('irts_deg_devter', {});
@@ -14604,7 +14773,35 @@ function DisciplinePage({ user }) {
     if (!isNarrow || !effectiveSelClass) return;
     const prefer = myPeriods.size ? Math.min(...[...myPeriods]) : 1;
     setMobilePeriod((p) => (allDayPeriods.includes(p) ? p : prefer));
+    setMobileExpandedPeriods((prev) => {
+      const next = new Set(prev);
+      next.add(prefer);
+      myPeriods.forEach((mp) => next.add(mp));
+      return next;
+    });
   }, [isNarrow, effectiveSelClass, date, myPeriods, allDayPeriods]);
+
+  const scrollToMobilePeriod = (p) => {
+    setMobilePeriod(p);
+    setMobileExpandedPeriods((prev) => new Set(prev).add(p));
+    setTimeout(() => {
+      const el = mobilePeriodRefs.current[p];
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  };
+
+  const toggleMobilePeriodExpand = (p) => {
+    setMobileExpandedPeriods((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+  };
+
+  const expandAllMobilePeriods = () => {
+    setMobileExpandedPeriods(new Set(allDayPeriods));
+  };
 
   const getPeriodEditAccess = (period) => {
     const tInfo = periodTeacherMap[period] || null;
@@ -14631,50 +14828,68 @@ function DisciplinePage({ user }) {
     const e = dayData.periods?.[period] || {};
     const { canEdit, tInfo, isMyPeriod } = getPeriodEditAccess(period);
     const selectedCount = (colKey) => getColSelectedCount(period, colKey);
+    const expanded = mobileExpandedPeriods.has(period);
+    const totalMarked = COLS.reduce((n, col) => n + (selectedCount(col.key) > 0 ? 1 : 0), 0);
+    const colLabel = (col) => COL_SHORT[col.key] || col.label;
     return (
-      <div className={`deg-m-period-card${isMyPeriod ? ' is-mine' : ''}`}>
+      <div
+        ref={(el) => { if (el) mobilePeriodRefs.current[period] = el; }}
+        className={`deg-m-period-card${isMyPeriod ? ' is-mine' : ''}`}
+      >
         <div className={`deg-m-period-head${isMyPeriod ? ' is-mine' : ''}`}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
-            <div>
-              <div style={{fontSize:17,fontWeight:900,color: isMyPeriod ? '#92400e' : '#1e40af',lineHeight:1.2}}>
-                {displayPeriod(period)}-р цаг
-                {isMyPeriod && (
-                  <span style={{display:'inline-block',marginLeft:6,fontSize:10,fontWeight:800,
-                    color:'#b45309',background:'#fde68a',borderRadius:6,padding:'2px 6px',verticalAlign:'middle'}}>
-                    Таны цаг
-                  </span>
+          <button type="button" className="deg-m-period-head-btn" onClick={() => toggleMobilePeriodExpand(period)}
+            aria-expanded={expanded}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:17,fontWeight:900,color: isMyPeriod ? '#92400e' : '#1e40af',lineHeight:1.2}}>
+                  {displayPeriod(period)}-р цаг
+                  {isMyPeriod && (
+                    <span style={{display:'inline-block',marginLeft:6,fontSize:10,fontWeight:800,
+                      color:'#b45309',background:'#fde68a',borderRadius:6,padding:'2px 6px',verticalAlign:'middle'}}>
+                      Таны цаг
+                    </span>
+                  )}
+                </div>
+                <div style={{fontSize:11,color:'#64748b',marginTop:3}}>{PERIOD_TIMES[period]}</div>
+              </div>
+              <div style={{textAlign:'right',flexShrink:0}}>
+                <div style={{fontSize:11,fontWeight:800,color:'#64748b'}}>{expanded ? '▼' : '▶'} {totalMarked ? totalMarked + ' төрөл' : ''}</div>
+                {tInfo && (
+                  <div style={{fontSize:10,fontWeight:700,color:'#15803d',marginTop:4,maxWidth:120,wordBreak:'break-word'}}>{tInfo.name}</div>
                 )}
               </div>
-              <div style={{fontSize:11,color:'#64748b',marginTop:3}}>{PERIOD_TIMES[period]}</div>
             </div>
-            {tInfo && (
-              <div style={{textAlign:'right',maxWidth:'48%'}}>
-                <div style={{fontSize:9,fontWeight:800,color:'#166534'}}>📚 Багш</div>
-                <div style={{fontSize:11,fontWeight:800,color:'#15803d',lineHeight:1.3,wordBreak:'break-word'}}>{tInfo.name}</div>
-              </div>
-            )}
-          </div>
+          </button>
         </div>
+        {expanded && (
         <div className="deg-m-col-grid">
           {COLS.map(col => {
             const cnt = selectedCount(col.key);
+            const badge = cnt > 0 ? (
+              <span className="deg-m-col-badge" style={{background: col.color + '22', color: col.color}}>{cnt}</span>
+            ) : (
+              <span className="deg-m-col-badge" style={{background:'#f1f5f9',color:'#94a3b8'}}>+</span>
+            );
             if (!canEdit) {
               return (
                 <div key={col.key} className={`deg-m-col-btn${cnt ? ' has-val' : ''}`} style={{cursor:'default',opacity:0.85}}>
-                  <div className="deg-m-col-label">{col.label}</div>
-                  <div className="deg-m-col-val" style={{color: cnt ? col.color : '#cbd5e1'}}>
-                    {renderColCellValue(period, col)}
+                  <div className="deg-m-col-text">
+                    <div className="deg-m-col-label">{colLabel(col)}</div>
+                    <div className="deg-m-col-val" style={{color: cnt ? col.color : '#cbd5e1'}}>
+                      {renderColCellValue(period, col)}
+                    </div>
                   </div>
+                  {badge}
                 </div>
               );
             }
             if (col.isScore) {
               return (
-                <label key={col.key} className="deg-m-col-btn has-val" style={{cursor:'default'}}>
-                  <div className="deg-m-col-label">{col.label}</div>
+                <label key={col.key} className="deg-m-col-btn has-val" style={{cursor:'default',flexDirection:'column',alignItems:'stretch'}}>
+                  <div className="deg-m-col-label">{colLabel(col)}</div>
                   <select value={e[col.key]||''} onChange={ev=>updateEntry(period,col.key,ev.target.value)}
-                    style={{width:'100%',border:'1.5px solid #e2e8f0',borderRadius:8,padding:'6px 8px',
-                      fontSize:14,fontWeight:800,color:col.color,background:'#fff',outline:'none'}}>
+                    style={{width:'100%',border:'1.5px solid #e2e8f0',borderRadius:8,padding:'10px 8px',
+                      fontSize:16,fontWeight:800,color:col.color,background:'#fff',outline:'none',minHeight:44}}>
                     <option value="">—</option>
                     {[1,2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}
                   </select>
@@ -14686,24 +14901,28 @@ function DisciplinePage({ user }) {
                 <button key={col.key} type="button"
                   className={`deg-m-col-btn${cnt ? ' has-val' : ''}`}
                   onClick={()=>setPickerInfo({period, colKey:col.key, colLabel:col.label, colColor:col.color})}>
-                  <div className="deg-m-col-label">{col.label}</div>
-                  <div className="deg-m-col-val" style={{color: cnt ? col.color : '#94a3b8'}}>
-                    {renderColCellValue(period, col)}
+                  <div className="deg-m-col-text">
+                    <div className="deg-m-col-label">{colLabel(col)}</div>
+                    <div className="deg-m-col-val" style={{color: cnt ? col.color : '#94a3b8'}}>
+                      {cnt ? renderColCellValue(period, col) : 'Дарж сурагч сонгоно'}
+                    </div>
                   </div>
+                  {badge}
                 </button>
               );
             }
             return (
-              <label key={col.key} className="deg-m-col-btn">
-                <div className="deg-m-col-label">{col.label}</div>
+              <label key={col.key} className="deg-m-col-btn" style={{flexDirection:'column',alignItems:'stretch'}}>
+                <div className="deg-m-col-label">{colLabel(col)}</div>
                 <input type="text" value={e[col.key]||''}
                   onChange={ev=>updateEntry(period,col.key,ev.target.value)}
                   placeholder="—"
-                  style={{width:'100%',border:'1.5px solid #e2e8f0',borderRadius:8,padding:'6px 8px',fontSize:13,outline:'none'}} />
+                  style={{width:'100%',border:'1.5px solid #e2e8f0',borderRadius:8,padding:'10px 8px',fontSize:15,outline:'none',minHeight:44,boxSizing:'border-box'}} />
               </label>
             );
           })}
         </div>
+        )}
       </div>
     );
   };
@@ -14819,8 +15038,11 @@ function DisciplinePage({ user }) {
 
   // ── Student Picker Modal ──
   const StudentPicker = () => {
-    if (!pickerInfo) return null;
-    const { period, colKey, colLabel, colColor } = pickerInfo;
+    const pi = pickerInfo;
+    const [pickerQ, setPickerQ] = React.useState('');
+    React.useEffect(() => { setPickerQ(''); }, [pi?.period, pi?.colKey]);
+    if (!pi) return null;
+    const { period, colKey, colLabel, colColor } = pi;
     const curNums = (dayData.periods?.[period]?.[colKey] || '').split(',').map(x=>x.trim()).filter(Boolean);
     // Extra safety: dedup again at render-time.
     // Priority: normalized NAME (so "123" name won't appear twice even with different №),
@@ -14860,15 +15082,24 @@ function DisciplinePage({ user }) {
       });
       return out;
     })();
+    const qNorm = String(pickerQ || '').trim().toLowerCase();
+    const filteredPickerStudents = qNorm
+      ? pickerStudents.filter((s) => {
+          const nm = String(s.name || '').toLowerCase();
+          const num = String(s.number || '').toLowerCase();
+          return nm.includes(qNorm) || num.includes(qNorm);
+        })
+      : pickerStudents;
 
     return (
       <div className="deg-picker-overlay" style={{
         position:'fixed',inset:0,background:'rgba(15,23,42,0.65)',display:'flex',
-        alignItems:'center',justifyContent:'center',zIndex:200,padding:16,overflowY:'auto',
+        alignItems: isNarrow ? 'flex-end' : 'center', justifyContent:'center',zIndex:200,
+        padding: isNarrow ? 0 : 16, overflowY:'auto',
       }} onClick={()=>setPickerInfo(null)}>
         <div className="deg-picker-sheet" style={{
-          background:'#fff',borderRadius:20,width:'100%',maxWidth:480,
-          boxShadow:'0 20px 60px rgba(0,0,0,.3)',maxHeight:'85vh',display:'flex',flexDirection:'column',
+          background:'#fff',borderRadius: isNarrow ? '16px 16px 0 0' : 20,width:'100%',maxWidth:480,
+          boxShadow:'0 20px 60px rgba(0,0,0,.3)',maxHeight: isNarrow ? '92dvh' : '85vh',display:'flex',flexDirection:'column',
         }} onClick={e=>e.stopPropagation()}>
           {/* Header */}
           <div style={{
@@ -14925,18 +15156,31 @@ function DisciplinePage({ user }) {
             </button>
           </div>
 
+          <div style={{padding:'10px 16px 0',flexShrink:0}}>
+            <input
+              type="search"
+              className="deg-picker-search"
+              placeholder="🔍 Сурагч хайх (№, нэр)..."
+              value={pickerQ}
+              onChange={(e) => setPickerQ(e.target.value)}
+              autoFocus={isNarrow}
+            />
+          </div>
+
           {/* Student list (checkbox multi-select) */}
-          <div style={{overflowY:'auto',padding:'12px 16px',flex:1}}>
-            {/* Force single-column list to avoid side-by-side duplicates */}
+          <div style={{overflowY:'auto',padding:'8px 16px',flex:1,WebkitOverflowScrolling:'touch'}}>
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {pickerStudents.map(s => {
+              {filteredPickerStudents.length === 0 && (
+                <div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>Олдсонгүй</div>
+              )}
+              {filteredPickerStudents.map(s => {
                 const sNum = String(s.number || s.id);
                 const numOnly = String(s.number || '').trim();
                 const sel = colKey === 'excused' && numOnly
                   ? (curNums.includes(numOnly) || curNums.includes(PARTIAL_FIRST3_TOKEN_PREFIX + numOnly))
                   : curNums.includes(sNum);
                 return (
-                  <label key={s.id} onClick={(e)=>{ e.preventDefault(); toggleStudent(period, colKey, s.number||s.id); }}
+                  <label key={s.id} className={isNarrow ? 'deg-picker-student-row' : ''} onClick={(e)=>{ e.preventDefault(); toggleStudent(period, colKey, s.number||s.id); }}
                     style={{
                       padding:'10px 10px', borderRadius:12, cursor:'pointer', textAlign:'left',
                       border:`2px solid ${sel ? colColor : '#e5e7eb'}`,
@@ -14944,14 +15188,15 @@ function DisciplinePage({ user }) {
                       transition:'all .12s',
                       display:'flex',alignItems:'center',gap:10,
                       userSelect:'none',
+                      minHeight: isNarrow ? 54 : undefined,
                     }}>
                     <input type="checkbox" checked={!!sel} readOnly
-                      style={{width:16,height:16,accentColor:colColor,cursor:'pointer'}} />
+                      style={{width: isNarrow ? 22 : 16,height: isNarrow ? 22 : 16,accentColor:colColor,cursor:'pointer',flexShrink:0}} />
                     <span style={{
-                      minWidth:28,height:28,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',
+                      minWidth: isNarrow ? 34 : 28,height: isNarrow ? 34 : 28,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',
                       background: sel ? colColor : '#f1f5f9',
                       color: sel ? 'white' : '#94a3b8',
-                      fontSize:11,fontWeight:900,flexShrink:0,
+                      fontSize: isNarrow ? 13 : 11,fontWeight:900,flexShrink:0,
                     }}>
                       {s.number || '?'}
                     </span>
@@ -14969,23 +15214,21 @@ function DisciplinePage({ user }) {
           </div>
 
           {/* Footer */}
-          <div style={{padding:'12px 16px',borderTop:'1px solid #f1f5f9',flexShrink:0,display:'flex',alignItems:'center',gap:10,justifyContent:'space-between',flexWrap:'wrap'}}>
-            <div style={{fontSize:12,fontWeight:800,color:'#111827'}}>
-              Сонгосон: <span style={{color:colColor}}>{curNums.length}</span> сурагч
+          <div className="deg-picker-footer" style={{display:'flex',alignItems:'center',gap:10,justifyContent:'space-between',flexWrap:'wrap'}}>
+            <div style={{fontSize:13,fontWeight:800,color:'#111827'}}>
+              Сонгосон: <span style={{color:colColor}}>{curNums.length}</span> / {clsStudents.length}
             </div>
-            <div style={{display:'flex',gap:8}}>
+            <div style={{display:'flex',gap:8,flex: isNarrow ? '1 1 100%' : undefined}}>
               <button onClick={()=>updateEntry(period,colKey,'')}
-                style={{padding:'10px 14px',borderRadius:12,border:'1.5px solid #e5e7eb',cursor:'pointer',
-                  fontWeight:800,fontSize:13,background:'#fff',color:'#64748b'}}>
+                style={{padding: isNarrow ? '12px 14px' : '10px 14px',borderRadius:12,border:'1.5px solid #e5e7eb',cursor:'pointer',
+                  fontWeight:800,fontSize:13,background:'#fff',color:'#64748b',flex: isNarrow ? 1 : undefined,minHeight: isNarrow ? 48 : undefined}}>
                 Цэвэрлэх
               </button>
-              <button onClick={()=>{
-                if (!curNums.length) { alert('Сурагч сонгоно уу'); return; }
-                setPickerInfo(null);
-              }}
-                style={{padding:'10px 24px',borderRadius:12,border:'none',cursor:'pointer',
-                  fontWeight:900,fontSize:14,background:`linear-gradient(135deg,${colColor},${colColor}cc)`,color:'white'}}>
-                Бүртгэх
+              <button onClick={()=> setPickerInfo(null)}
+                style={{padding: isNarrow ? '12px 20px' : '10px 24px',borderRadius:12,border:'none',cursor:'pointer',
+                  fontWeight:900,fontSize:14,background:`linear-gradient(135deg,${colColor},${colColor}cc)`,color:'white',
+                  flex: isNarrow ? 2 : undefined,minHeight: isNarrow ? 48 : undefined}}>
+                ✓ Хадгалах
               </button>
             </div>
           </div>
@@ -14996,7 +15239,7 @@ function DisciplinePage({ user }) {
   };
 
   return (
-    <div className="fade-in deg-devter-page" style={{display:'flex',flexDirection:'column',gap:16}}>
+    <div className={`fade-in deg-devter-page${isNarrow && isTeacherView && effectiveSelClass ? ' deg-has-m-bottom' : ''}`} style={{display:'flex',flexDirection:'column',gap:16}}>
 
       {/* ── Single class Tailan Modal ── */}
       {showTailan && effectiveSelClass && (() => {
@@ -15445,7 +15688,8 @@ function DisciplinePage({ user }) {
         </div>
       ) : (
         <>
-          {/* ── Quick "Сурагч сонгоод бүртгэх" button ── */}
+          {/* ── Quick "Сурагч сонгоод бүртгэх" button (desktop) ── */}
+          {!isNarrow && (
           <div style={{display:'flex',justifyContent:'flex-end'}}>
             <button
               className="deg-bulk-btn"
@@ -15461,34 +15705,82 @@ function DisciplinePage({ user }) {
               👥 Сурагч сонгоод бүртгэх
             </button>
           </div>
+          )}
 
           {isNarrow && (
             <div className="deg-mobile-panel card" style={{padding:'12px 14px'}}>
-              <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>⏱ Цаг сонгох</div>
-              <div className="deg-m-period-bar">
-                {allDayPeriods.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    className={`deg-m-period-chip${mobilePeriod === p ? ' is-active' : ''}${myPeriods.has(p) ? ' is-mine' : ''}`}
-                    onClick={() => setMobilePeriod(p)}
-                  >
-                    {displayPeriod(p)}
+              <div className="deg-m-sticky-bar">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:8}}>
+                  <div style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>⏱ Бүх цаг (компьютер шиг)</div>
+                  <button type="button" onClick={expandAllMobilePeriods}
+                    style={{padding:'6px 10px',borderRadius:8,border:'1px solid #bfdbfe',background:'#eff6ff',
+                      color:'#1e40af',fontSize:11,fontWeight:800,cursor:'pointer'}}>
+                    Бүгдийг нээх
                   </button>
-                ))}
+                </div>
+                <div className="deg-m-period-bar">
+                  {allDayPeriods.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className={`deg-m-period-chip${mobilePeriod === p ? ' is-active' : ''}${myPeriods.has(p) ? ' is-mine' : ''}`}
+                      onClick={() => scrollToMobilePeriod(p)}
+                    >
+                      {displayPeriod(p)}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div style={{marginTop:8,padding:'10px 12px',background:'#f8fafc',borderRadius:12,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b',lineHeight:1.45}}>
-                💡 Ногоон хүрээтэй = таны цаг. Доорх товчлуур дээр дарж сурагч сонгоно.
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:11,fontWeight:800,color:'#1e40af',marginBottom:4}}>📚 Цүнхний ном</div>
+                <input type="text" className="deg-meta-input" value={dayData.bookNote||''} onChange={e=>setMeta('bookNote',e.target.value)}
+                  placeholder="Номтой, уншсан..."
+                  style={{border:'1.5px solid #bfdbfe',borderRadius:8,padding:'10px 12px',background:'#fff',outline:'none'}} />
               </div>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:10,lineHeight:1.45,padding:'8px 10px',background:'#f8fafc',borderRadius:10}}>
+                💡 Шар = таны цаг. Мөр дээр дарж сурагч сонгоно. Толгой дээр дарж цагийг нээх/хаах.
+              </div>
+              <div className="deg-m-shift-label" style={{background:'linear-gradient(135deg,#eff6ff,#dbeafe)',color:'#1e40af',border:'1px solid #bfdbfe'}}>
+                🌅 I ээлж ({DUTY_SHIFT_RANGE_LABEL.s1})
+              </div>
+              {PERIODS_I.map((p) => <MobileDegPeriodPanel key={p} period={p} />)}
+              <div style={{margin:'10px 0',padding:'10px 12px',background:'linear-gradient(135deg,#fef9c3,#fef3c7)',borderRadius:12,border:'1px solid #fde68a'}}>
+                <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:4}}>🍱 Lunch box</div>
+                <input type="text" className="deg-meta-input" value={dayData.lunchNote||''} onChange={e=>setMeta('lunchNote',e.target.value)}
+                  placeholder="Үдийн хоолоо..."
+                  style={{border:'1.5px solid #fde68a',borderRadius:8,padding:'10px 12px',background:'#fff',outline:'none'}} />
+              </div>
+              <div className="deg-m-shift-label" style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',color:'#15803d',border:'1px solid #86efac'}}>
+                🌇 II ээлж ({DUTY_SHIFT_RANGE_LABEL.s2})
+              </div>
+              {PERIODS_II.map((p) => <MobileDegPeriodPanel key={p} period={p} />)}
+              <div style={{padding:'10px 12px',background:'#fef9c3',borderRadius:12,border:'1px solid #fde68a',fontSize:12,color:'#92400e',fontWeight:700,textAlign:'center'}}>
+                ✅ Автоматаар хадгалагдана
+              </div>
+            </div>
+          )}
+
+          {isNarrow && isTeacherView && effectiveSelClass && (
+            <div className="deg-m-bottom-bar">
+              {myPeriods.size > 0 && (
+                <button type="button" onClick={() => scrollToMobilePeriod(Math.min(...[...myPeriods]))}
+                  style={{border:'2px solid #fbbf24',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>
+                  ⭐ Миний цаг
+                </button>
+              )}
+              <button type="button" className="deg-bulk-btn" onClick={() => setBulkOpen(true)}
+                style={{border:'none',background:'linear-gradient(135deg,#2563eb,#1e40af)',color:'#fff',cursor:'pointer'}}>
+                👥 Олон сонгох
+              </button>
             </div>
           )}
 
           {/* ── Bulk modal ── */}
           {bulkOpen && (
-            <div style={{position:'fixed',inset:0,background:'rgba(15,23,42,0.65)',zIndex:250,
-              display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 12px',overflowY:'auto'}}
+            <div className={isNarrow ? 'deg-bulk-overlay-mobile' : ''} style={{position:'fixed',inset:0,background:'rgba(15,23,42,0.65)',zIndex:250,
+              display:'flex',alignItems: isNarrow ? 'flex-end' : 'flex-start',justifyContent:'center',padding: isNarrow ? 0 : '20px 12px',overflowY:'auto'}}
               onClick={()=>setBulkOpen(false)}>
-              <div style={{width:'100%',maxWidth:640,background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(0,0,0,0.28)'}}
+              <div className={isNarrow ? 'deg-bulk-sheet-mobile' : ''} style={{width:'100%',maxWidth:640,background:'#fff',borderRadius:18,boxShadow:'0 20px 60px rgba(0,0,0,0.28)'}}
                 onClick={e=>e.stopPropagation()}>
                 <div style={{padding:'14px 18px',borderRadius:'18px 18px 0 0',
                   background:'linear-gradient(135deg,#1e40af,#2563eb)',
@@ -15536,8 +15828,8 @@ function DisciplinePage({ user }) {
                       ⚠️ Энэ ангид суралцагч алга байна.
                     </div>
                   ) : (
-                    <div style={{maxHeight:360,overflowY:'auto',padding:'6px 2px'}}>
-                      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
+                    <div style={{maxHeight: isNarrow ? '50vh' : 360,overflowY:'auto',padding:'6px 2px',WebkitOverflowScrolling:'touch'}}>
+                      <div className={isNarrow ? 'deg-bulk-grid-mobile' : ''} style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:8}}>
                         {bulkStudents.map(s=>{
                           const n = String(s.number||'').trim();
                           const checked = n && bulkSel.has(n);
@@ -15579,24 +15871,6 @@ function DisciplinePage({ user }) {
               <span>Энэ ангид суралцагч нэмэгдээгүй байна. <strong>Ирц бүртгэл → Суралцагчид</strong> цэснээс Excel-ээр нэмнэ үү.</span>
             </div>
           )}
-          {isNarrow && (
-            <div className="deg-mobile-panel card" style={{padding:'12px 14px'}}>
-              <div style={{marginBottom:10}}>
-                <div style={{fontSize:11,fontWeight:800,color:'#1e40af',marginBottom:4}}>📚 Цүнхний ном</div>
-                <input type="text" className="deg-meta-input" value={dayData.bookNote||''} onChange={e=>setMeta('bookNote',e.target.value)}
-                  placeholder="Номтой, уншсан..."
-                  style={{border:'1.5px solid #bfdbfe',borderRadius:8,padding:'8px 12px',background:'#fff',outline:'none'}} />
-              </div>
-              <MobileDegPeriodPanel period={mobilePeriod} />
-              <div style={{marginTop:8}}>
-                <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:4}}>🍱 Lunch box</div>
-                <input type="text" className="deg-meta-input" value={dayData.lunchNote||''} onChange={e=>setMeta('lunchNote',e.target.value)}
-                  placeholder="Үдийн хоолоо..."
-                  style={{border:'1.5px solid #fde68a',borderRadius:8,padding:'8px 12px',background:'#fff',outline:'none'}} />
-              </div>
-            </div>
-          )}
-
           <div className="card deg-table-wrap" style={{padding:0,overflow:'hidden'}}>
             {/* Цүнхний ном */}
             <div style={{padding:'10px 18px',background:'linear-gradient(135deg,#eff6ff,#dbeafe)',borderBottom:'2px solid #bfdbfe',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
