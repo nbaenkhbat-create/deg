@@ -10,7 +10,8 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b12';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b17';</script>
+    <script>window.SMARTDUTY_MANUAL_ATTENDANCE_ONLY = true;</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -668,6 +669,19 @@ const { useState, useEffect, useCallback, useRef, useMemo } = React;
 const ROLES = { TEACHER:'teacher', DUTY:'duty', ADMIN:'admin' };
 const ROLE_MN = { teacher:'🧑‍🏫 Багш', duty:'👮 Жижүүр', admin:'👔 Удирдлага' };
 
+/** true = зөвхөн багш гараар ирц бүртгэнэ, «Жижүүрт илгээх» дарж илгээнэ (GPS/Arduino идэвхгүй) */
+const SMARTDUTY_MANUAL_ATTENDANCE_ONLY = window.SMARTDUTY_MANUAL_ATTENDANCE_ONLY !== false;
+
+function isAutoDeviceAttendanceSource(source) {
+  const s = String(source || '').toLowerCase();
+  return s === 'arduino_esp32' || s === 'gps_location' || s === 'fingerprint_device' || s === 'absent_auto' || s === 'rtdb_push';
+}
+
+function isManualAttendanceRecord(a) {
+  if (!SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return true;
+  return !isAutoDeviceAttendanceSource(a?.source);
+}
+
 const STATUSES = [
   { id:'present', label:'Ирсэн',             icon:'✅', clr:'green',  bg:'#f0fdf4', border:'#22c55e', txt:'#16a34a', activeBg:'#16a34a' },
   { id:'late',    label:'Хоцорсон',           icon:'⏰', clr:'yellow', bg:'#fffbeb', border:'#f59e0b', txt:'#d97706', activeBg:'#d97706' },
@@ -745,12 +759,17 @@ const fmtMonthMn = (m) => { const [y,mo] = m.split('-'); return `${y} оны ${M
 // DUTY SHIFT TIMES
 // ════════════════════════════════════════════
 const DUTY_SHIFT_TIMES = {
-  'I ээлж':  { start: '08:00', end: '13:30' },
-  'II ээлж': { start: '13:31', end: '19:00' },
+  'I ээлж':  { start: '00:00', end: '14:00' },
+  'II ээлж': { start: '14:01', end: '23:59' },
 };
 const DUTY_SHIFT_RANGE_LABEL = {
   s1: `${DUTY_SHIFT_TIMES['I ээлж'].start}–${DUTY_SHIFT_TIMES['I ээлж'].end}`,
   s2: `${DUTY_SHIFT_TIMES['II ээлж'].start}–${DUTY_SHIFT_TIMES['II ээлж'].end}`,
+};
+/** Хурууны хээ / GPS — хоцорсон минут (жижүүр товчны цагнаас тусдаа, хичээлийн эхлэл) */
+const DUTY_FP_LATE_START = {
+  'I ээлж': '08:00',
+  'II ээлж': '14:10',
 };
 function parseDutyHM(str) {
   const [h, m] = String(str || '12:00').split(':').map(Number);
@@ -759,8 +778,8 @@ function parseDutyHM(str) {
 
 // ════════════════════════════════════════════
 // FINGERPRINT AUTO-STATUS (жижүүрийн цаг = DUTY_SHIFT_TIMES)
-// I  ээлж: 08:00 дараа → хоцорсон; scan цонх I ээлжийн төгсгөл хүртэл
-// II ээлж: II ээлжийн эхний цагийн төгсгөлөөс хойш → хоцорсон; scan цонх II-ийн төгсгөл хүртэл
+// I  ээлж: 00:00 дараа → хоцорсон; scan цонх I ээлжийн төгсгөл (14:00) хүртэл
+// II ээлж: 14:01-ээс хойш → хоцорсон; scan цонх II-ийн төгсгөл (23:59) хүртэл
 // shift = 'I ээлж' | 'II ээлж' | null (auto-detect by scan time)
 // ════════════════════════════════════════════
 // computeFpResult — статус + хоцорсон минутыг хамтад нь буцаана
@@ -788,18 +807,18 @@ function computeFpResult(scanTimeStr, shift) {
   if (isNaN(sm)) return { status: 'present', lateMinutes: null };
 
   // ══════════════════════════════════════════════════════════════════════════
-  // Scan цонх — DUTY_SHIFT_TIMES-тэй нийцүүлсэн (I: 08:00–13:30, II: 13:31–19:00)
-  // Өглөө 07:00-аас scan хүлээнэ; I ээлжийн төгсгөл = жижүүрийн I-ийн end
+  // Scan цонх — DUTY_SHIFT_TIMES-тэй нийцүүлсэн (I: 00:00–14:00, II: 14:01–23:59)
+  // I ээлжийн эхлэлээс scan хүлээнэ; төгсгөл = жижүүрийн I-ийн end
   // ══════════════════════════════════════════════════════════════════════════
   const toMinStr = (s) => { const [h, m] = String(s || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
   const d1 = DUTY_SHIFT_TIMES['I ээлж'];
   const d2 = DUTY_SHIFT_TIMES['II ээлж'];
-  const S1_SCAN_START = toMinStr('07:00');
+  const S1_SCAN_START = toMinStr(d1.start);
   const S1_END        = toMinStr(d1.end);
   const S2_START      = toMinStr(d2.start);
   const S2_END        = toMinStr(d2.end);
-  const S1_LATE       = toMinStr(d1.start);
-  const S2_LATE       = toMinStr('14:10');
+  const S1_LATE       = toMinStr(DUTY_FP_LATE_START['I ээлж']);
+  const S2_LATE       = toMinStr(DUTY_FP_LATE_START['II ээлж']);
 
   const inS1 = sm >= S1_SCAN_START && sm <= S1_END;
   const inS2 = sm >= S2_START && sm <= S2_END;
@@ -876,48 +895,37 @@ function getCurrentDutyShift() {
   return null;
 }
 
-// Тухайн багшийн өнөөдрийн жижүүрийн ээлжийг тодорхойлно
-function useTodayDutyShift(userName) {
+/** Жижүүр багш — хуваарь + одоогийн цагийн цонх */
+function useDutyTeacherContext(userName, dateStr) {
   const [dutyPublished] = useLS('irts_duty_published', {});
-  // Орлогч зөвшөөрсөн үед event-ээр шууд шинэчлэх (setter давуулахгүйгээр)
   const [eventData, setEventData] = React.useState(null);
-  const [now, setNow] = React.useState(() => new Date());
 
   React.useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 60000);
     const onUpdate = (e) => { if (e.detail) setEventData(e.detail); };
     window.addEventListener('irts_duty_published_update', onUpdate);
-    return () => { clearInterval(t); window.removeEventListener('irts_duty_published_update', onUpdate); };
+    return () => window.removeEventListener('irts_duty_published_update', onUpdate);
   }, []);
 
-  if (userName == null || userName === '') return null;
-
+  const date = dateStr || todayStr();
   const source = eventData || dutyPublished;
-  const today = todayStr();
-  const [year, month, day] = today.split('-').map(Number);
-  const monthKey = `${year}-${String(month).padStart(2,'0')}`;
-  const monthData = source[monthKey];
+  const dayEntry = getDutyDayEntryForDate(source, date);
+  const scheduledShifts = getScheduledDutyShiftsForUser(dayEntry, userName);
+  const activeShift = getCurrentDutyShift();
+  const activeIfScheduled = scheduledShifts.includes(activeShift) ? activeShift : null;
 
-  if (!monthData || !monthData.days) return null;
-  const dayEntry = monthData.days.find(d => {
-    if (d.day !== day) return false;
-    const jd = d.jsDay !== undefined ? d.jsDay : new Date(d.year||year, (d.month||month)-1, d.day).getDay();
-    return jd !== 0;
-  });
-  if (!dayEntry) return null;
+  return {
+    date,
+    scheduledShifts,
+    isScheduledToday: scheduledShifts.length > 0,
+    activeShift: activeIfScheduled,
+  };
+}
 
-  const toMin = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
-  const timeMin = now.getHours() * 60 + now.getMinutes();
-  const s1Start = toMin(DUTY_SHIFT_TIMES['I ээлж'].start);
-  const s1End   = toMin(DUTY_SHIFT_TIMES['I ээлж'].end);
-  const s2Start = toMin(DUTY_SHIFT_TIMES['II ээлж'].start);
-  const s2End   = toMin(DUTY_SHIFT_TIMES['II ээлж'].end);
-  const inS1 = timeMin >= s1Start && timeMin <= s1End;
-  const inS2 = timeMin >= s2Start && timeMin <= s2End;
-
-  if (scheduleNamesMatch(dayEntry.s1, userName) && inS1) return 'I ээлж';
-  if (scheduleNamesMatch(dayEntry.s2, userName) && inS2) return 'II ээлж';
-  return null;
+// Sidebar badge: өнөөдөр жижүүрт томилогдсон эсэх + идэвхтэй ээлж
+function useTodayDutyShift(userName) {
+  const ctx = useDutyTeacherContext(userName, todayStr());
+  if (!ctx.isScheduledToday) return null;
+  return ctx.activeShift || ctx.scheduledShifts[0] || null;
 }
 
 // Excel-ээс жижүүрийн хуваарь унших (эхний sheet; эхний мөр гарчигтай эсвэл A=өдөр B=I C=II)
@@ -1127,23 +1135,89 @@ function mergeDutySubmissionsArrays(prev, remote) {
   const r = Array.isArray(remote) ? remote : [];
   if (!r.length) return p;
   if (!p.length) return r;
-  const byKey = new Map();
+  const byId = new Map();
+  const bySlot = new Map();
   const rowKey = (s) => {
     if (!s) return '';
-    if (s.id) return `id:${s.id}`;
     const d = s.date || '';
     const cid = String(s.classId || '').trim();
     const cn = normClassKey(s.className || '');
     const tu = String(s.teacherUid || '').trim();
-    return `slot:${d}::${cid || cn}::${tu}`;
+    const sh = s.sentShift || '';
+    return `slot:${d}::${cid || cn}::${tu}::${sh}`;
+  };
+  const upsert = (map, k, s) => {
+    const existing = map.get(k);
+    if (!existing || new Date(s.sentAt || 0) >= new Date(existing.sentAt || 0)) map.set(k, s);
   };
   [...p, ...r].forEach((s) => {
     if (!s) return;
-    const k = rowKey(s);
-    const existing = byKey.get(k);
-    if (!existing || new Date(s.sentAt || 0) >= new Date(existing.sentAt || 0)) byKey.set(k, s);
+    if (s.id) upsert(byId, String(s.id), s);
+    upsert(bySlot, rowKey(s), s);
   });
-  return [...byKey.values()];
+  const merged = new Map();
+  [...byId.values(), ...bySlot.values()].forEach((s) => {
+    if (s.id) merged.set(String(s.id), s);
+    else merged.set(rowKey(s), s);
+  });
+  return [...merged.values()];
+}
+
+/** Илгээсэн цагаар ээлж (I / II) */
+function inferDutySentShift(sentAtIso, className, classes) {
+  const d = sentAtIso ? new Date(sentAtIso) : new Date();
+  const hm = d.getHours() * 60 + d.getMinutes();
+  const toMin = (s) => {
+    const [h, m] = String(s || '00:00').split(':').map(Number);
+    return (h || 0) * 60 + (m || 0);
+  };
+  const s1s = toMin(DUTY_SHIFT_TIMES['I ээлж'].start);
+  const s1e = toMin(DUTY_SHIFT_TIMES['I ээлж'].end);
+  const s2s = toMin(DUTY_SHIFT_TIMES['II ээлж'].start);
+  const s2e = toMin(DUTY_SHIFT_TIMES['II ээлж'].end);
+  if (hm >= s1s && hm <= s1e) return 'I ээлж';
+  if (hm >= s2s && hm <= s2e) return 'II ээлж';
+  const g = parseClassGradeLevel(className);
+  if (g != null && g >= 9) return 'I ээлж';
+  if (g != null && g >= 6 && g <= 8) return 'II ээлж';
+  return getCurrentDutyShift() || 'I ээлж';
+}
+
+function getSubmissionDutyShift(sub, classes) {
+  if (sub?.sentShift === 'I ээлж' || sub?.sentShift === 'II ээлж') return sub.sentShift;
+  const cls = (classes || []).find((c) => dutySubmissionClassKey(sub, classes) === String(c.id));
+  return inferDutySentShift(sub?.sentAt, sub?.className || cls?.name, classes);
+}
+
+function getDutyDayEntryForDate(dutyPublished, dateStr) {
+  if (!dutyPublished || !dateStr) return null;
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+  const monthData = dutyPublished[monthKey];
+  if (!monthData?.days) return null;
+  return monthData.days.find((d) => {
+    if (d.day !== day) return false;
+    const jd = d.jsDay !== undefined ? d.jsDay : new Date(d.year || year, (d.month || month) - 1, d.day).getDay();
+    return jd !== 0;
+  }) || null;
+}
+
+function getScheduledDutyShiftsForUser(dayEntry, userName) {
+  if (!dayEntry || !userName) return [];
+  const out = [];
+  if (scheduleNamesMatch(dayEntry.s1, userName)) out.push('I ээлж');
+  if (scheduleNamesMatch(dayEntry.s2, userName)) out.push('II ээлж');
+  return out;
+}
+
+function latestDutySubsForDateShift(submissions, dateStr, shiftLabel, classes) {
+  const map = {};
+  (submissions || []).filter((s) => s.date === dateStr).forEach((s) => {
+    if (getSubmissionDutyShift(s, classes) !== shiftLabel) return;
+    const key = dutySubmissionClassKey(s, classes);
+    if (!map[key] || new Date(s.sentAt) > new Date(map[key].sentAt)) map[key] = s;
+  });
+  return Object.values(map);
 }
 
 function applyIrtsRemoteToState(key, prev, remote) {
@@ -4573,7 +4647,6 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
 
   // Анги хариуцсан багшид sidebar nav-аас "Ирц бүртгэл"-г нуух
   // (Хурдан хандах хэсэгт ногоон товч байдаг тул давхардахгүйн тулд)
-  // "Хурууны хээ бүртгэл " хэвээр харагдана
   const nav = (navs[user?.role] || []).filter(item => {
     if (user?.role === 'teacher') {
       // Анги хариуцаагүй багшид хоёуланг нуух
@@ -4584,8 +4657,11 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
     return true;
   });
 
-  // Багш - өнөөдөр жижүүртэй эсэхийг шалгана (hook-ийг нөхцөлгүй дуудна)
-  const todayShift = useTodayDutyShift(user?.role === 'teacher' ? (user?.name || '') : null);
+  // Багш - өнөөдөр жижүүртэй эсэх (цагийн цонхоор биш — хуваарийн өдөр)
+  const dutySidebarCtx = useDutyTeacherContext(user?.role === 'teacher' ? (user?.name || '') : null, todayStr());
+  const todayShift = dutySidebarCtx.isScheduledToday
+    ? (dutySidebarCtx.activeShift || dutySidebarCtx.scheduledShifts[0] || null)
+    : null;
   // Ирсэн орлогч хүсэлтийн тоо — sidebar badge
   const [_subReqs] = useLS('irts_duty_sub_requests', []);
   const incomingSubReqCount = user?.role === 'teacher'
@@ -4621,7 +4697,7 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
 
 
       {/* ═══ ОНЦГОЙ ТОВЧНУУД (Багш role-д) ═══ */}
-      {user?.role === 'teacher' && (showHomeroomBtn || todayShift) && (
+      {user?.role === 'teacher' && (showHomeroomBtn || dutySidebarCtx.isScheduledToday) && (
         <div style={{
           background:'rgba(255,255,255,0.08)', borderRadius:14, padding:'12px 14px',
           marginBottom:16, border:'1px solid rgba(255,255,255,0.12)',
@@ -4661,7 +4737,7 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
           )}
 
           {/* Ногоон жижүүр товч */}
-          {todayShift && (
+          {dutySidebarCtx.isScheduledToday && (
             <button
               onClick={() => navTo('teacher-duty-mode')}
               style={{
@@ -4682,7 +4758,7 @@ function Sidebar({ user, page, setPage, onLogout, onNavigate }) {
                   display:'block', fontSize:10, fontWeight:600,
                   color: page === 'teacher-duty-mode' ? 'rgba(255,255,255,0.75)' : '#15803d',
                   marginTop:1,
-                }}>{todayShift}</span>
+                }}>{dutySidebarCtx.scheduledShifts.join(' · ') || todayShift}</span>
               </span>
               {incomingSubReqCount > 0 && (
                 <span style={{
@@ -6877,10 +6953,9 @@ function AttendancePage({ user, setPage }) {
     }
   }, [stTab]);
 
-  // ── Fingerprint scan event шагнана — FingerprintPage-аас шууд мэдэгдэнэ ──────────────
-  // classId check хийхгүй — myStudents-ын аль нэгтэй таарвал нэмнэ
-  // Ингэснээр classId mismatch-ийн улмаас блок болохгүй
+  // ── Fingerprint / GPS event (идэвхгүй — зөвхөн гараар ирц) ──────────────
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     const handler = (e) => {
       if (!canRecordAttendance) return;
       const d = e.detail;
@@ -6987,10 +7062,9 @@ function AttendancePage({ user, setPage }) {
     return () => window.removeEventListener('fp_scan_arrived', handler);
   }, [effectiveClassId, myStudents, canRecordAttendance]);
 
-  // ── Mount үед RTDB fingerprint record-уудыг attendance-д merge хийнэ ──────────────────
-  // dispatch-д найдахгүй — localStorage-аас шууд уншиж зөв цаг, огноотой нь merge хийнэ
-  // Offline үед хуруу уншуулсан record-уудыг багш орж ирэхэд автоматаар харуулна
+  // ── Mount үед RTDB fingerprint record merge (идэвхгүй — зөвхөн гараар ирц) ──
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     if (!effectiveClassId || !myStudents.length) return;
     const schoolId = getCurrentSchoolId();
     const savedMappings = (() => { try { return JSON.parse(localStorage.getItem('fp_mappings_' + schoolId) || '[]'); } catch { return []; } })();
@@ -7584,7 +7658,7 @@ function AttendancePage({ user, setPage }) {
   // (устгасан/шилжсэн сурагчдын хуучин бичлэг тоонд ордоггүй болно)
   const currentStudentIds = new Set(myStudents.map(s => s.id));
   const dayRecRaw = attendance.filter(a =>
-    a.classId === effectiveClassId && a.date === date && currentStudentIds.has(a.studentId)
+    a.classId === effectiveClassId && a.date === date && currentStudentIds.has(a.studentId) && isManualAttendanceRecord(a)
   );
   // studentId-аар dedup — нэг сурагчийн давхардсан бичлэгийн сүүлчийнхийг авна
   const dayRecMap = {};
@@ -7624,7 +7698,7 @@ function AttendancePage({ user, setPage }) {
       counts,
       total,
       sentAt: new Date().toISOString(),
-      // shift: өдрийн нэг илгээлт — I/II ээлжийн жижүүр хоёуланд харагдана (цагийн shift-ээр бүү далдлах)
+      sentShift: getCurrentDutyShift() || inferDutySentShift(new Date().toISOString(), effectiveCls?.name, classes),
       status: 'pending',
       ...(isResend && { resendCount: (todaySub?.resendCount || 0) + 1 }),
     };
@@ -7666,6 +7740,13 @@ function AttendancePage({ user, setPage }) {
               {effectiveCls?.name || '—'} анги · {total} суралцагч · {marked}/{total} бүртгэгдсэн
               {!canRecordAttendance && <span style={{display:'block',marginTop:6,color:'#b45309',fontWeight:700,fontSize:13}}>🔒 Зөвхөн анги даасан багш ирц бүртгэнэ</span>}
             </p>
+            {SMARTDUTY_MANUAL_ATTENDANCE_ONLY && (
+              <p style={{marginTop:8,fontSize:12,color:'#1e40af',background:'#eff6ff',border:'1px solid #bfdbfe',
+                borderRadius:8,padding:'8px 12px',maxWidth:520,lineHeight:1.5}}>
+                ✋ <b>Гараар ирц</b> бүртгээд <b>«📤 Жижүүрт илгээх»</b> товчоор л жижүүрт илгээнэ.
+                GPS болон Arduino хурууны хээ энэ системд ашиглагдахгүй.
+              </p>
+            )}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
             {/* Tab switcher */}
@@ -10617,21 +10698,29 @@ function TeacherDutyModePage({ user }) {
   const [lateClassId, setLateClassId] = uS('');
   const [lateSearch, setLateSearch] = uS('');
   const [lateMinutesStr, setLateMinutesStr] = uS('5');
-  const todayShift = useTodayDutyShift(user.name);
-  const date = todayStr();
+  const [viewDate, setViewDate] = uS(todayStr());
+  const [viewMonth, setViewMonth] = uS(() => todayStr().slice(0, 7));
+  const dutyCtx = useDutyTeacherContext(user.name, viewDate);
+  const [viewShift, setViewShift] = uS('I ээлж');
 
-  // ── Өнөөдрийн submission-ууд (бүх ээлж — анги даасан багшийн илгээлт shift-ээр бүү далдлагдана) ──
-  const todaySubs = submissions.filter((s) => s.date === date);
+  React.useEffect(() => {
+    if (dutyCtx.scheduledShifts.includes(viewShift)) return;
+    setViewShift(dutyCtx.activeShift || dutyCtx.scheduledShifts[0] || 'I ээлж');
+  }, [viewDate, dutyCtx.activeShift, dutyCtx.scheduledShifts.join('|')]);
 
-  // ── Анги бүрийн хамгийн сүүлийн submission (давхардал арилгах) ──
-  const latestSubsByClass = uM(() => {
-    const map = {};
-    todaySubs.forEach(s => {
-      const key = dutySubmissionClassKey(s, classes);
-      if (!map[key] || new Date(s.sentAt) > new Date(map[key].sentAt)) map[key] = s;
-    });
-    return Object.values(map);
-  }, [todaySubs, classes]);
+  const date = viewDate;
+  const todayShift = viewShift;
+
+  const shiftSubsRaw = uM(
+    () => latestDutySubsForDateShift(submissions, date, viewShift, classes),
+    [submissions, date, viewShift, classes]
+  );
+
+  const otherShiftLabel = viewShift === 'I ээлж' ? 'II ээлж' : 'I ээлж';
+  const otherShiftCount = uM(
+    () => latestDutySubsForDateShift(submissions, date, otherShiftLabel, classes).length,
+    [submissions, date, otherShiftLabel, classes]
+  );
 
   const mainSchoolClasses = uM(
     () => pickClassesForMainSchoolList(classes, new Set()),
@@ -10640,14 +10729,19 @@ function TeacherDutyModePage({ user }) {
 
   // Word/Excel: I ээлж → 9–12, II ээлж → 6–8
   const dutyExportClasses = uM(
-    () => [...filterMainClassesForDutyShift(todayShift, mainSchoolClasses)].sort(sortClassesByGradeName),
-    [todayShift, mainSchoolClasses]
+    () => [...filterMainClassesForDutyShift(viewShift, mainSchoolClasses)].sort(sortClassesByGradeName),
+    [viewShift, mainSchoolClasses]
   );
 
-  // Дэлгэц: 6–12-р ангийн бүх илгээсэн ирц — I/II ээлж солигдсон ч харагдана
+  // Сонгогдсон ээлжийн ирц
   const scopedLatestSubs = uM(
-    () => filterDutySubmissionsGrades6to12(latestSubsByClass, classes).slice().sort(sortSubsByGradeName),
-    [latestSubsByClass, classes]
+    () => filterDutySubmissionsGrades6to12(shiftSubsRaw, classes).slice().sort(sortSubsByGradeName),
+    [shiftSubsRaw, classes]
+  );
+
+  const daySubsForShift = uM(
+    () => (submissions || []).filter((s) => s.date === date && getSubmissionDutyShift(s, classes) === viewShift),
+    [submissions, date, viewShift, classes]
   );
 
   const dutyBandIdSet = uM(
@@ -10676,7 +10770,7 @@ function TeacherDutyModePage({ user }) {
   );
 
   const dutyShiftGradeHint =
-    todayShift === 'I ээлж' ? '9–12-р анги' : todayShift === 'II ээлж' ? '6–8-р анги' : '6–12-р анги';
+    viewShift === 'I ээлж' ? '9–12-р анги' : viewShift === 'II ээлж' ? '6–8-р анги' : '6–12-р анги';
 
   // ── Жижүүр: хоцорсон тэмдэглэх — Хуваарийн «Анги…» хайлттай ижил шүүлт (norm + normClassKey) ──
   const dutyLateSchedNorm = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
@@ -10767,7 +10861,7 @@ function TeacherDutyModePage({ user }) {
       return;
     }
     const degKey = `${cid}_${date}`;
-    const period = todayShift === 'II ээлж' ? 8 : 1;
+    const period = viewShift === 'II ээлж' ? 8 : 1;
     const lateLabel = mins > 0 ? `${sNum}(${mins}мин)` : sNum;
 
     setDegData((prev) => {
@@ -10815,7 +10909,7 @@ function TeacherDutyModePage({ user }) {
 
   // ── Удирдлагад дамжуулах — анги тус бүрээс зөвхөн хамгийн сүүлийн pending/seen ──
   const forwardAll = () => {
-    const pend = todaySubs.filter(
+    const pend = daySubsForShift.filter(
       (s) => s.status === 'pending' || s.status === 'seen'
     );
     const latestPend = {};
@@ -10831,7 +10925,7 @@ function TeacherDutyModePage({ user }) {
     // ── Өнөөдрийн жижүүрийн тэмдэглэлийг мөн удирдлагад илгээгдсэн болго ──
     const unsentNotes = dutyNotes.filter(n =>
       n.date === date &&
-      (!todayShift || !n.shift || n.shift === todayShift) &&
+      n.shift === viewShift &&
       !n.sentToAdmin
     );
     if (unsentNotes.length > 0) {
@@ -10874,7 +10968,7 @@ function TeacherDutyModePage({ user }) {
 
   // ── Миний өнөөдрийн идэвхтэй хүсэлт ──
   const myPendingReq = subRequests.find(r =>
-    r.fromEmail === user.email && r.date === date && r.shift === todayShift && r.status === 'pending'
+    r.fromEmail === user.email && r.date === date && r.shift === viewShift && r.status === 'pending'
   );
 
   // ── Надруу ирсэн хүсэлтүүд (shift шаардлагагүй) ──
@@ -10886,10 +10980,10 @@ function TeacherDutyModePage({ user }) {
   // ── Хүсэлт илгээх ──
   const sendSubRequest = (candidate) => {
     const req = { id:genId(), fromName:user.name, fromEmail:user.email,
-      toName:candidate.name, toEmail:candidate.email||'', date, shift:todayShift,
+      toName:candidate.name, toEmail:candidate.email||'', date, shift:viewShift,
       status:'pending', createdAt:new Date().toISOString() };
     setSubRequests(prev => [
-      ...prev.filter(r => !(r.fromEmail===user.email && r.date===date && r.shift===todayShift && r.status==='pending')),
+      ...prev.filter(r => !(r.fromEmail===user.email && r.date===date && r.shift===viewShift && r.status==='pending')),
       req
     ]);
     setShowSubModal(false);
@@ -10946,15 +11040,17 @@ function TeacherDutyModePage({ user }) {
     setTimeout(()=>setToast(''), 3000);
   };
 
-  if (!todayShift) {
+  if (!dutyCtx.isScheduledToday && date === todayStr()) {
     return (
       <div className="fade-in card" style={{padding:48,textAlign:'center',margin:'40px auto',maxWidth:480}}>
         <div style={{fontSize:52,marginBottom:16}}>👮</div>
-        <h2 style={{fontSize:20,fontWeight:800,color:'#1e293b',marginBottom:8}}>Жижүүрийн ээлж биш байна</h2>
+        <h2 style={{fontSize:20,fontWeight:800,color:'#1e293b',marginBottom:8}}>Өнөөдөр жижүүр биш</h2>
         <p style={{color:'#64748b',fontSize:14,lineHeight:1.6}}>
-          Өнөөдөр таны жижүүрийн ээлж эхлээгүй байна.<br/>
-          Хуваарьийн дагуу таны ээлж эхлэх үед энэ хуудас идэвхжинэ.
+          Энэ өдөр таныг жижүүрийн хуваарьд томилоогүй байна.<br/>
+          Өмнөх өдрийн ирц, тэмдэглэлийг доорх огноогоор харах боломжтой.
         </p>
+        <input type="date" value={viewDate} max={todayStr()} onChange={(e) => setViewDate(e.target.value)}
+          className="input-field" style={{width:'auto',marginTop:16,padding:'8px 14px'}} />
       </div>
     );
   }
@@ -10967,7 +11063,32 @@ function TeacherDutyModePage({ user }) {
         <div style={{display:'flex',flexWrap:'wrap',alignItems:'flex-start',justifyContent:'space-between',gap:16}}>
           <div>
             <h1 style={{fontSize:24,fontWeight:800,color:'white',marginBottom:4}}>👮 Жижүүрийн горим</h1>
-            <p style={{color:'rgba(255,255,255,0.85)',fontSize:14}}>{fmtDateMn(date)} · {todayShift} · {user.name}</p>
+            <p style={{color:'rgba(255,255,255,0.85)',fontSize:14,marginBottom:10}}>{fmtDateMn(date)} · {viewShift} · {user.name}</p>
+            <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center'}}>
+              <input type="month" value={viewMonth} max={todayStr().slice(0,7)}
+                onChange={(e) => {
+                  const m = e.target.value;
+                  setViewMonth(m);
+                  if (m) setViewDate((prev) => {
+                    const d = Math.min(parseInt(String(prev).split('-')[2] || '1', 10), new Date(parseInt(m.slice(0,4),10), parseInt(m.slice(5),10), 0).getDate());
+                    return `${m}-${String(d).padStart(2,'0')}`;
+                  });
+                }}
+                style={{padding:'6px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.35)',background:'rgba(255,255,255,0.15)',color:'white',fontSize:12}} />
+              <input type="date" value={viewDate} max={todayStr()}
+                onChange={(e) => { setViewDate(e.target.value); if (e.target.value) setViewMonth(e.target.value.slice(0,7)); }}
+                style={{padding:'6px 10px',borderRadius:8,border:'1px solid rgba(255,255,255,0.35)',background:'rgba(255,255,255,0.15)',color:'white',fontSize:12}} />
+              {['I ээлж', 'II ээлж'].map((sh) => (
+                <button key={sh} type="button" onClick={() => setViewShift(sh)}
+                  style={{
+                    padding:'7px 14px', borderRadius:10, border:'2px solid rgba(255,255,255,0.5)', cursor:'pointer',
+                    background: viewShift === sh ? 'white' : 'rgba(255,255,255,0.12)',
+                    color: viewShift === sh ? '#15803d' : 'white', fontWeight:800, fontSize:12,
+                  }}>
+                  {sh === 'I ээлж' ? '☀️' : '🌙'} {sh} ({DUTY_SHIFT_RANGE_LABEL[sh === 'I ээлж' ? 's1' : 's2']})
+                </button>
+              ))}
+            </div>
           </div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
             {[{v:submittedCount,l:'Ирсэн',c:'white'},{v:waitingCount,l:'Хүлээж',c:'#fde68a'},{v:forwardedCount,l:'Дамжуулсан',c:'#bbf7d0'}].map(s=>(
@@ -11186,7 +11307,7 @@ function TeacherDutyModePage({ user }) {
                 });
 
                 // ── Жижүүрийн тэмдэглэлийн хүснэгт ──
-                const todayNote=(dutyNotes||[]).filter(n=>n.date===date&&n.shift===todayShift&&n.authorName===user.name);
+                const todayNote=(dutyNotes||[]).filter(n=>n.date===date&&n.shift===viewShift&&n.authorName===user.name);
                 const note=todayNote.length>0?todayNote[todayNote.length-1]:null;
                 const noteHdrRow=new TableRow({children:[mkCell('жижүүр багшийн тэмдэглэл',{header:true,span:4})]});
                 const noteColHdr=new TableRow({children:[
@@ -11362,8 +11483,8 @@ function TeacherDutyModePage({ user }) {
           >
             <h2 style={{ fontSize: 18, fontWeight: 800, color: '#1e293b', marginBottom: 4 }}>⏰ Хоцорсон бүртгэх</h2>
             <p style={{ fontSize: 12, color: '#64748b', marginBottom: 14, lineHeight: 1.5 }}>
-              {fmtDateMn(date)} · {todayShift || '—'} — Дэг дэвтрийн <b>хоцорсон</b> баганад оруулна (
-              {todayShift === 'II ээлж' ? '8-р цаг' : '1-р цаг'}). Минутыг оруулбал <code>№(5мин)</code> хэлбэрээр хадгална.
+              {fmtDateMn(date)} · {viewShift || '—'} — Дэг дэвтрийн <b>хоцорсон</b> баганад оруулна (
+              {viewShift === 'II ээлж' ? '8-р цаг' : '1-р цаг'}). Минутыг оруулбал <code>№(5мин)</code> хэлбэрээр хадгална.
             </p>
 
             <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 6 }}>
@@ -11572,14 +11693,14 @@ function TeacherDutyModePage({ user }) {
         </div>
       )}
 
-      {/* ── Өнөөдрийн ирцийн байдал — хүснэгт ── */}
+      {/* ── Ирцийн байдал — хүснэгт ── */}
       <div className="card" style={{padding:24}}>
-        <h2 style={{fontSize:18,fontWeight:800,color:'#1e293b',marginBottom:4}}>📊 Өнөөдрийн ирцийн байдал</h2>
+        <h2 style={{fontSize:18,fontWeight:800,color:'#1e293b',marginBottom:4}}>📊 {fmtDateMn(date)} — ирцийн байдал</h2>
         <p style={{fontSize:13,color:'#64748b',marginBottom:16}}>
-          <b>{todayShift}</b> · {dutyShiftGradeHint}: {submittedCount}/{totalClasses} ирц илгээсэн
-          {scopedLatestSubs.length > submittedCount && (
-            <span style={{marginLeft:6,color:'#64748b'}}>
-              · нийт 6–12-р ангиас {scopedLatestSubs.length} илгээлт харагдаж байна
+          <b>{viewShift}</b> · {dutyShiftGradeHint}: {submittedCount}/{totalClasses} ирц илгээсэн
+          {otherShiftCount > 0 && (
+            <span style={{marginLeft:8,color:'#2563eb',fontWeight:600}}>
+              · {otherShiftLabel}: {otherShiftCount} анги (ээлж солих товчоор харна)
             </span>
           )}
           {pending.length > 0 && (
@@ -11596,7 +11717,7 @@ function TeacherDutyModePage({ user }) {
             {/* ── Илгээсэн — хүснэгт ── */}
             {scopedLatestSubs.length > 0 && (
               <div>
-                <div style={{fontSize:12,color:'#94a3b8',fontWeight:700,marginBottom:8,letterSpacing:0.5}}>ИРЦ ИЛГЭЭСЭН (6–12-р анги — ээлж солигдсон ч харагдана)</div>
+                <div style={{fontSize:12,color:'#94a3b8',fontWeight:700,marginBottom:8,letterSpacing:0.5}}>ИРЦ ИЛГЭЭСЭН — {viewShift} ({dutyShiftGradeHint})</div>
                 <div style={{overflowX:'auto',borderRadius:12,border:'1.5px solid #e5e7eb'}}>
                   <table style={{width:'100%',borderCollapse:'collapse',fontSize:13,minWidth:640}}>
                     <thead>
@@ -11626,7 +11747,8 @@ function TeacherDutyModePage({ user }) {
                             <td style={{...td,textAlign:'left',borderLeft:`3px solid ${sc.border}`}}>
                               <div style={{fontWeight:800,fontSize:14,color:'#1e293b'}}>{sub.className} анги</div>
                               <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>
-                                {sub.teacherName}·{new Date(sub.sentAt).toLocaleTimeString('mn-MN',{hour:'2-digit',minute:'2-digit'})}
+                                {sub.teacherName} · {new Date(sub.sentAt).toLocaleTimeString('mn-MN',{hour:'2-digit',minute:'2-digit'})}
+                                · {getSubmissionDutyShift(sub, classes)}
                               </div>
                             </td>
                             <td style={{...td,fontWeight:700,color:'#374151'}}>{exp}</td>
@@ -11660,7 +11782,7 @@ function TeacherDutyModePage({ user }) {
               <div>
                 <div style={{fontSize:12,color:'#94a3b8',fontWeight:700,marginBottom:8,letterSpacing:0.5}}>ХҮЛЭЭЖ БАЙНА</div>
                 <div style={{fontSize:11,color:'#94a3b8',marginBottom:8}}>
-                  {todayShift} · {dutyShiftGradeHint} — ирц илгээгүй ангиуд
+                  {viewShift} · {dutyShiftGradeHint} — ирц илгээгүй ангиуд
                 </div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                   {waitingTagsClasses.map(cls => (
@@ -11677,7 +11799,29 @@ function TeacherDutyModePage({ user }) {
       </div>
 
       {/* ── Жижүүрийн тэмдэглэл ── */}
-      <DutyNoteForm user={user} shift={todayShift} date={date} submissions={scopedLatestSubs} classes={dutyExportClasses} />
+      <DutyNoteForm user={user} shift={viewShift} date={date} submissions={scopedLatestSubs} classes={dutyExportClasses} />
+
+      {/* Өөр ээлжийн тэмдэглэлүүд (зөвхөн унших) */}
+      {(() => {
+        const otherNotes = (dutyNotes || []).filter(
+          (n) => n.date === date && n.shift === otherShiftLabel && n.authorName === user.name
+        );
+        if (!otherNotes.length) return null;
+        const last = otherNotes[otherNotes.length - 1];
+        return (
+          <div className="card" style={{ padding: 20, background: '#f8fafc', border: '1.5px dashed #cbd5e1' }}>
+            <h3 style={{ fontSize: 14, fontWeight: 800, color: '#64748b', marginBottom: 8 }}>
+              📝 {otherShiftLabel} — таны тэмдэглэл (унших)
+            </h3>
+            <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>
+              Ээлж солих товчоор {viewShift}-ийн тэмдэглэл, тайлан, Word татахыг засна.
+            </p>
+            <div style={{ fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+              {[last.col1, last.col2, last.col3, last.col4].filter(Boolean).join(' · ') || '—'}
+            </div>
+          </div>
+        );
+      })()}
 
       {detailSub && <StudentListModal sub={detailSub} onClose={()=>setDetailSub(null)}/>}
     </div>
@@ -13982,7 +14126,7 @@ function DisciplinePage({ user }) {
     // Байр медаль
     const shMedals=['🥇','🥈','🥉'];
     const shMedalBg=['#fef9c3','#f1f5f9','#fff7ed','#fff','#fff','#fff','#fff','#fff','#fff','#fff'];
-    const shRankColor=(t)=>t>=80?'#16a34a':t>=60?'#d97706':'#dc2626';
+    const shRankColor=(t)=>t>=90?'#16a34a':t>=75?'#2563eb':t>=50?'#d97706':'#dc2626';
 
     // Нийт хүснэгтийн мөрүүд
     const shTableRows = shAllRows.map((r,i)=>{
@@ -13990,9 +14134,9 @@ function DisciplinePage({ user }) {
       const medal=shMedals[i]||String(i+1);
       const tc=shRankColor(r.total);
       const barCell=(v,color)=>{
-        const w=Math.min(100,(v/25)*100).toFixed(0);
+        const w=Math.min(100,(v/SHAGNAL_CAT_MAX)*100).toFixed(0);
         return '<td style="border:1px solid #e2e8f0;padding:5pt 8pt;text-align:center;vertical-align:middle">'
-          +'<div style="font-weight:700;color:'+color+';font-size:9.5pt">'+v.toFixed(1)+'%</div>'
+          +'<div style="font-weight:700;color:'+color+';font-size:9.5pt">'+v.toFixed(2)+' оноо</div>'
           +'<div style="height:5pt;background:#e5e7eb;border-radius:3pt;overflow:hidden;margin:2pt 3pt 0">'
           +'<div style="width:'+w+'%;height:100%;background:'+color+';border-radius:3pt"></div></div></td>';
       };
@@ -14004,7 +14148,7 @@ function DisciplinePage({ user }) {
         +barCell(r.cult,'#059669')
         +barCell(r.acad,'#b45309')
         +'<td style="border:1px solid #e2e8f0;padding:6pt 10pt;text-align:center;font-weight:900;font-size:12pt;color:'+tc+'">'+r.total.toFixed(1)+'%</td>'
-        +'<td style="border:1px solid #e2e8f0;padding:6pt 10pt;text-align:center;font-weight:800;font-size:11pt;color:'+tc+'">'+r.points.toFixed(2)+'</td>'
+        +'<td style="border:1px solid #e2e8f0;padding:6pt 10pt;text-align:center;font-weight:800;font-size:11pt;color:'+tc+'">'+r.points.toFixed(2)+'/30</td>'
         +'</tr>';
     }).join('');
 
@@ -14017,7 +14161,7 @@ function DisciplinePage({ user }) {
         '<tr style="background:'+shMedalBg[i]+'">'
         +'<td style="border:1px solid #e2e8f0;padding:8pt 12pt;font-size:18pt;text-align:center;width:40pt">'+shMedals[i]+'</td>'
         +'<td style="border:1px solid #e2e8f0;padding:8pt 12pt;font-size:12pt;font-weight:bold;color:'+color+'">'+esc(r.name)+'</td>'
-        +'<td style="border:1px solid #e2e8f0;padding:8pt 12pt;font-size:11pt;font-weight:800;color:'+color+'">'+r[key].toFixed(2)+'% → '+(r[key]/100*7.5).toFixed(2)+' оноо</td>'
+        +'<td style="border:1px solid #e2e8f0;padding:8pt 12pt;font-size:11pt;font-weight:800;color:'+color+'">'+r[key].toFixed(2)+' / 7.50 оноо ('+shagnalCatPct(r[key]).toFixed(1)+'%)</td>'
         +'</tr>'
       ).join('');
       return '<div style="background:'+color+'10;border:2px solid '+color+'40;border-radius:6pt;padding:12pt 14pt;margin:10pt 0">'
@@ -14035,17 +14179,17 @@ function DisciplinePage({ user }) {
     const awardsSection = sectionTitle(4,'Ангиудын Дэгийн Дэвтэр Хөтлөлт – Шагналт Ангиуд','#b45309')
       +infoBox('Шагналт байрыг системд бүртгэгдсэн <b>'+allDegDates.length+'</b> өдрийн өгөгдлийг дүн шинжилгээ хийж <b>автоматаар</b> тооцоолсон.'
         +' Хугацаа: <b>'+dateRangeLabel+'</b> &nbsp;·&nbsp; Нийт <b>'+classesWithData+'</b> анги үнэлэгдсэн.'
-        +' Нийт 30 оноо = 100% · 4 ангилал тус бүр 25% (7.5 оноо).','#fefce8','#d97706')
+        +' Нийт 30 оноо = 100% · төрөл бүр 7.5 оноо · N = ангийн сурагчийн тоо.','#fefce8','#d97706')
 
       // ── Ангилал бүрийн TOP3 ──
       +shCatTop3('mgmt','Шилдэг менежменттэй анги','#2563eb','🏅',
-        'Хоцорсон · Өвчтэй · Чөлөөтэй · Тасалсан — нийт 25% (6.25% × 4). Өндөр ирц = өндөр оноо.')
+        'Хоцорсон · Өвчтэй · Чөлөөтэй · Тасалсан — тус бүр 1.875 оноо (нийт 7.5).')
       +shCatTop3('behav','Шилдэг төлөвшилтэй анги','#7c3aed','🌟',
-        'Гар утасны зөрчил · Хандлага харилцаа · Идэвх оролцоо — нийт 25% (8.33% × 3).')
+        'Утас · Идэвх · Хандлага — тус бүр 2.5 оноо (нийт 7.5).')
       +shCatTop3('cult','Соёлч анги','#059669','🎨',
-        'Ангийн цэвэрлэгээ (1-5) · Дүрэмт хувцас · Ариун цэвэр — нийт 25% (8.33% × 3).')
+        'Цэвэрлэгээ 1.875 · Хувцас 2.8125 · Ариун цэвэр 2.8125 (нийт 7.5).')
       +shCatTop3('acad','Ухаалаг анги','#b45309','📚',
-        'Гэрийн даалгаврын биелэлт — нийт 25%. Нэг өдөр нэг сурагч нэг удаа тооцно.')
+        'Гэрийн даалгавар — 7.5 оноо (W × m/N).')
 
       // ── Нийт оноогоор эрэмбэлсэн бүрэн хүснэгт ──
       +'<h3 style="font-size:11pt;color:#0f172a;margin:16pt 0 6pt;border-bottom:2px solid #1e3a8a;padding-bottom:4pt">🏆 Бүх ангийн нийт оноогоор эрэмбэлсэн жагсаалт</h3>'
@@ -14053,10 +14197,10 @@ function DisciplinePage({ user }) {
       +'<thead><tr>'
       +'<th style="'+thS+';background:#1e3a8a;color:#fff;width:32pt">Байр</th>'
       +'<th style="'+thS+';background:#1e3a8a;color:#fff;text-align:left;min-width:50pt">Анги</th>'
-      +'<th style="'+thS+';background:#dbeafe;color:#2563eb;min-width:80pt">🏅 Менежмент<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>'
-      +'<th style="'+thS+';background:#ede9fe;color:#7c3aed;min-width:80pt">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>'
-      +'<th style="'+thS+';background:#d1fae5;color:#059669;min-width:80pt">🎨 Соёлч<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>'
-      +'<th style="'+thS+';background:#fef9c3;color:#b45309;min-width:80pt">📚 Ухаалаг<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>'
+      +'<th style="'+thS+';background:#dbeafe;color:#2563eb;min-width:80pt">🏅 Менежмент<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>'
+      +'<th style="'+thS+';background:#ede9fe;color:#7c3aed;min-width:80pt">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>'
+      +'<th style="'+thS+';background:#d1fae5;color:#059669;min-width:80pt">🎨 Соёлч<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>'
+      +'<th style="'+thS+';background:#fef9c3;color:#b45309;min-width:80pt">📚 Ухаалаг<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>'
       +'<th style="'+thS+';background:#0f172a;color:#fbbf24;min-width:70pt">🏆 Нийт %</th>'
       +'<th style="'+thS+';background:#0f172a;color:#fbbf24;min-width:60pt">Оноо<br/><span style="font-weight:400;font-size:8pt">/30-аас/</span></th>'
       +'</tr></thead>'
@@ -15436,7 +15580,7 @@ function DisciplinePage({ user }) {
                             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 2 }}>
                               <span style={{ fontSize: 14 }}>{medals[i]}</span>
                               <span style={{ fontWeight: 700, color: '#1e293b' }}>{r.name}</span>
-                              <span style={{ color: '#64748b', fontSize: 10 }}>{r[scoreKey].toFixed(1)}% /25</span>
+                              <span style={{ color: '#64748b', fontSize: 10 }}>{r[scoreKey].toFixed(2)} / 7.5</span>
                             </div>
                           ))}
                       </div>
@@ -15449,7 +15593,7 @@ function DisciplinePage({ user }) {
                         <AwardBox title="🎨 Соёлч анги" color="#0f766e" scoreKey="cult" rows={top3cat('cult')} />
                         <AwardBox title="📚 Ухаалаг анги" color="#059669" scoreKey="acad" rows={top3cat('acad')} />
                         <div style={{ fontSize: 10, color: '#78350f', marginTop: 4 }}>
-                          Дэг дэвтрийн бүртгэл + ирц → 4×25% = 100% (30 оноо). «Шагнал» цэсэнд нарийвчилсан харагдана.
+                          Дэг дэвтрийн бүртгэл + ирц → 4×7.5 = 30 оноо (N = ангийн сурагчийн тоо). «Шагнал» цэсэнд нарийвчилсан харагдана.
                         </div>
                       </div>
                     );
@@ -16124,7 +16268,25 @@ function inferFingerprintShiftFromClassName(className) {
 // ════════════════════════════════════════════
 // 🖐 FINGERPRINT ИРЦИЙН ХУУДАС
 // ════════════════════════════════════════════
+function ManualAttendanceOnlyNotice({ title }) {
+  return (
+    <div className="fade-in card" style={{ padding: 48, textAlign: 'center', maxWidth: 520, margin: '40px auto' }}>
+      <div style={{ fontSize: 52, marginBottom: 16 }}>✋</div>
+      <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1e293b', marginBottom: 8 }}>{title || 'Зөвхөн гараар ирц'}</h2>
+      <p style={{ color: '#64748b', fontSize: 14, lineHeight: 1.6 }}>
+        Энэ сургуулийн SmartDUTY системд сурагчийн ирцийг <b>зөвхөн анги даасан багш гараар</b> бүртгэнэ.
+        Дараа нь <b>«Жижүүрт илгээх»</b> товч дарж жижүүр багшид илгээнэ.
+        <br /><br />
+        GPS байршил болон Arduino хурууны хээний автомат ирц идэвхгүй.
+      </p>
+    </div>
+  );
+}
+
 function FingerprintPage({ user }) {
+  if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) {
+    return <ManualAttendanceOnlyNotice title="Хурууны хээ / Arduino идэвхгүй" />;
+  }
   const [students] = useLS('irts_students', []);
   const [classes]  = useLS('irts_classes', []);
   const schoolId   = getCurrentSchoolId();
@@ -16744,6 +16906,7 @@ function FingerprintPage({ user }) {
   }, []);
 
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     const rtdb = window.__rtdb;
     if (!rtdb) { setRtdbStatus('error'); return; }
     const ref = rtdb.ref('attendance');
@@ -17053,14 +17216,9 @@ function FingerprintPage({ user }) {
     return () => ref.off('child_added', handleNew);
   }, [schoolId]);
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // GPS LOCATION CHECK-IN LISTENER — утасны апп-аас GPS байршилт ирц бүртгэх
-  // student_checkins RTDB node-д бичих бүрт website дээр шууд харагдана
-  // Цагийн дүрмээр төлөв тодорхойлно:
-  //   I  ээлж: 08:00-аас өмнө → Ирсэн, 08:00-аас хойш → Хоцорсон, 13:30 хүртэл ирээгүй → Тасалсан (DUTY_SHIFT_TIMES)
-  //   II ээлж: 13:31-ээс өмнө → Ирсэн, 13:31-ээс хойш → Хоцорсон, 19:00 хүртэл ирээгүй → Тасалсан (DUTY_SHIFT_TIMES)
-  // ══════════════════════════════════════════════════════════════════════════════
+  // GPS LOCATION CHECK-IN (идэвхгүй — SMARTDUTY_MANUAL_ATTENDANCE_ONLY)
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     if (!rtdb || !schoolId) return;
 
     const rtdb = window.__rtdb;
@@ -20032,6 +20190,7 @@ function useAutoAbsent(user) {
   }, [myClass, students]);
 
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     if (!myClass || !myStudents.length) return;
 
     // fp_shift / fp_class_shift localStorage-аас авна; байхгүй бол ангийн нэрээр
@@ -20158,13 +20317,14 @@ function useAutoAbsent(user) {
 
     const endI = parseDutyHM(DUTY_SHIFT_TIMES['I ээлж'].end);
     const endII = parseDutyHM(DUTY_SHIFT_TIMES['II ээлж'].end);
+    const startI = parseDutyHM(DUTY_SHIFT_TIMES['I ээлж'].start);
     const startII = parseDutyHM(DUTY_SHIFT_TIMES['II ээлж'].start);
 
-    // I ээлж timer — I ээлжийн төгсгөл (жишээ 13:30)
+    // I ээлж timer — I ээлжийн төгсгөл (14:00)
     const setupS1 = () => {
       if (isDone('I')) return;
       const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-      const inS1Window = nowMin >= toMin(8, 0) && nowMin < toMin(23, 59);
+      const inS1Window = nowMin >= toMin(startI.h, startI.m) && nowMin < toMin(startII.h, startII.m);
       if (!inS1Window) return;
 
       const delay = msUntilHHMM(endI.h, endI.m);
@@ -20180,7 +20340,7 @@ function useAutoAbsent(user) {
       }
     };
 
-    // II ээлж timer — II ээлжийн төгсгөл (жишээ 19:00)
+    // II ээлж timer — II ээлжийн төгсгөл (23:59)
     const setupS2 = () => {
       if (isDone('II')) return;
       const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
@@ -20279,122 +20439,132 @@ function SubRequestGlobalBanner({ user }) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// ШАГНАЛ — ОНОО ТООЦООЛЛЫН СИСТЕМ
-// Нийт 30 оноо = 100% | 4 ангилал тус бүр 25% (7.5 оноо)
+// ШАГНАЛ — ОНОО ТООЦООЛЛЫН СИСТЕМ (30 оноо = 100%, төрөл бүр 7.5 оноо)
+// N = тухайн ангийн нийт сурагчийн тоо (жишээ: 39 биш, ангиас авна)
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── Тооцооллын жишиг томьёо ──────────────────────────────────────────────
-// CATEGORY 1 — Шилдэг менежменттэй анги (25%)
-//   Хоцорсон, Өвчтэй, Чөлөөтэй, Тасалсан — тус бүр 6.25%
-//   penalty = criterionWeight / studentCount
-//   score   = criterionWeight − (penalty × violationCount)  ≥ 0
+const SHAGNAL_SYSTEM_MAX = 30;
+const SHAGNAL_CAT_MAX = 7.5;
+const SHAGNAL_MGMT_W = 1.875;
+const SHAGNAL_BEHAV_W = 2.5;
+const SHAGNAL_CULT_CLEAN_W = 1.875;
+const SHAGNAL_CULT_UNIFORM_W = 2.8125;
+const SHAGNAL_CULT_HYGIENE_W = 2.8125;
+const SHAGNAL_ACAD_W = 7.5;
 
-// CATEGORY 2 — Шилдэг төлөвшилтэй анги (25%)
-//   Гар утас, Хичээлийн идэвх, Хандлага — тус бүр 8.33%
-//   penalty = criterionWeight / studentCount
+function shagnalPts2(x) {
+  return parseFloat(Number(x).toFixed(2));
+}
 
-// CATEGORY 3 — Соёлч анги (25%)
-//   Цэвэрлэгээ 1-5 → score = (rating/5) × 8.33
-//   Дүрэмт хувцас, Ариун цэвэр — тус бүр 8.33% penalty-based
+/** Логик А: хасах — W − (k/N)×W, k≥N → 0 */
+function shagnalSubtract(W, k, n) {
+  if (!n || n <= 0) return shagnalPts2(W);
+  const kk = Math.max(0, Number(k) || 0);
+  if (kk >= n) return 0;
+  return shagnalPts2(W - (kk / n) * W);
+}
 
-// CATEGORY 4 — Ухаалаг анги (25%)
-//   Гэрийн даалгавар = completionRate × 25
+/** Логик В: нэмэх — W × (m/N) */
+function shagnalAdd(W, m, n) {
+  if (!n || n <= 0) return 0;
+  const mm = Math.max(0, Math.min(n, Number(m) || 0));
+  return shagnalPts2(W * (mm / n));
+}
 
-// Дундаж оноо (Daily / Weekly / Monthly)
-// Weekly  = sum(dailyScores) / 7
-// Monthly = sum(dailyScores) / totalDays
+/** Логик Б: цэвэрлэгээ 1–5 */
+function shagnalCleanRating(S, W) {
+  const w = W != null ? W : SHAGNAL_CULT_CLEAN_W;
+  const s = Math.max(0, Math.min(5, Number(S) || 0));
+  return shagnalPts2(w * (s / 5));
+}
 
-/**
- * calculateManagementScore — Менежментийн оноо тооцох
- * @param {number} late     - Хоцорсон тоо
- * @param {number} sick     - Өвчтэй тоо
- * @param {number} excused  - Чөлөөтэй тоо
- * @param {number} absent   - Тасалсан тоо
- * @param {number} n        - Сурагчдын тоо
- * @returns {number} 0–25 оноо (%)
- */
+function shagnalCatPct(catPts) {
+  return shagnalPts2((catPts / SHAGNAL_CAT_MAX) * 100);
+}
+
+function shagnalGradeLabel(pct) {
+  const p = Number(pct) || 0;
+  if (p >= 90) return 'Маш сайн';
+  if (p >= 75) return 'Сайн';
+  if (p >= 50) return 'Дундаж';
+  return 'Хангалтгүй';
+}
+
 function calculateManagementScore(late, sick, excused, absent, n) {
-  if (!n || n <= 0) return 25;
-  const W = 25;         // нийт жин
-  const crit = W / 4;  // 6.25% — 4 шалгуур
-  const pen  = crit / n;
-  const s1 = Math.max(0, crit - pen * (late    || 0));
-  const s2 = Math.max(0, crit - pen * (sick    || 0));
-  const s3 = Math.max(0, crit - pen * (excused || 0));
-  const s4 = Math.max(0, crit - pen * (absent  || 0));
-  return parseFloat((s1 + s2 + s3 + s4).toFixed(4));
+  if (!n || n <= 0) return SHAGNAL_CAT_MAX;
+  return shagnalPts2(
+    shagnalSubtract(SHAGNAL_MGMT_W, late, n) +
+    shagnalSubtract(SHAGNAL_MGMT_W, sick, n) +
+    shagnalSubtract(SHAGNAL_MGMT_W, excused, n) +
+    shagnalSubtract(SHAGNAL_MGMT_W, absent, n)
+  );
 }
 
-/**
- * calculateBehaviorScore — Төлөвшлийн оноо тооцох
- * @param {number} phone    - Гар утасны зөрчил тоо
- * @param {number} inactive - Идэвхгүй сурагч тоо (participation)
- * @param {number} attitude - Хандлагын зөрчил тоо
- * @param {number} n        - Сурагчдын тоо
- * @returns {number} 0–25 оноо (%)
- */
-function calculateBehaviorScore(phone, inactive, attitude, n) {
-  if (!n || n <= 0) return 25;
-  const W   = 25;
-  const crit = W / 3; // 8.33%
-  const pen  = crit / n;
-  // Гар утас → penalty-based (зөрчил)
-  const s1 = Math.max(0, crit - pen * (phone    || 0));
-  // Идэвх → оролцогч / нийт (positive)
-  const participated = Math.max(0, n - (inactive || 0));
-  const s2 = parseFloat(((participated / n) * crit).toFixed(4));
-  // Хандлага → penalty-based
-  const s3 = Math.max(0, crit - pen * (attitude || 0));
-  return parseFloat((s1 + s2 + s3).toFixed(4));
+/** activityAvg = өдрийн дундаж идэвхтэй сурагчийн тоо */
+function calculateBehaviorScore(phone, activityAvg, attitude, n) {
+  if (!n || n <= 0) return SHAGNAL_CAT_MAX;
+  return shagnalPts2(
+    shagnalSubtract(SHAGNAL_BEHAV_W, phone, n) +
+    shagnalAdd(SHAGNAL_BEHAV_W, activityAvg, n) +
+    shagnalSubtract(SHAGNAL_BEHAV_W, attitude, n)
+  );
 }
 
-/**
- * calculateCultureScore — Соёлч ангийн оноо тооцох
- * @param {number} cleanRating - Цэвэрлэгээний оноо 1-5
- * @param {number} uniform     - Дүрэмт хувцасны зөрчил
- * @param {number} hygiene     - Ариун цэврийн зөрчил
- * @param {number} n           - Сурагчдын тоо
- * @returns {number} 0–25 оноо (%)
- */
 function calculateCultureScore(cleanRating, uniform, hygiene, n) {
-  if (!n || n <= 0) return 25;
-  const W    = 25;
-  const crit = W / 3; // 8.33%
-  const pen  = crit / n;
-  // Цэвэрлэгээ: багш 1-5 оноо өгдөг
-  const s1 = parseFloat((((cleanRating || 3) / 5) * crit).toFixed(4));
-  // Дүрэмт хувцас → penalty
-  const s2 = Math.max(0, crit - pen * (uniform || 0));
-  // Ариун цэвэр → penalty
-  const s3 = Math.max(0, crit - pen * (hygiene || 0));
-  return parseFloat((s1 + s2 + s3).toFixed(4));
+  if (!n || n <= 0) return SHAGNAL_CAT_MAX;
+  const clean = shagnalCleanRating(cleanRating > 0 ? cleanRating : 3, SHAGNAL_CULT_CLEAN_W);
+  return shagnalPts2(
+    clean +
+    shagnalSubtract(SHAGNAL_CULT_UNIFORM_W, uniform, n) +
+    shagnalSubtract(SHAGNAL_CULT_HYGIENE_W, hygiene, n)
+  );
 }
 
-/**
- * calculateAcademicScore — Ухаалаг ангийн оноо тооцох
- * @param {number} submitted  - Гэрийн даалгавар өгсөн сурагчийн өдрийн дундаж тоо
- * @param {number} n          - Нийт сурагч
- * @param {number} days       - Тооцоолсон өдрийн тоо (default 1)
- * @returns {number} 0–25 оноо (%)
- */
-function calculateAcademicScore(submitted, n, days) {
-  if (!n || n <= 0) return 25;
-  const W    = 25;
-  const d    = Math.max(1, days || 1);
-  // Өдрийн дундаж биелэлт: нийт / өдөр / сурагч тоо, max 1
-  const rate = Math.min(1, (submitted || 0) / (d * n));
-  return parseFloat((rate * W).toFixed(4));
+/** homeworkTotal = хугацааны нийт; өдрийн дундаж m = total/days */
+function calculateAcademicScore(homeworkTotal, n, days) {
+  if (!n || n <= 0) return SHAGNAL_CAT_MAX;
+  const d = Math.max(1, days || 1);
+  const mAvg = (homeworkTotal || 0) / d;
+  return shagnalAdd(SHAGNAL_ACAD_W, mAvg, n);
 }
 
-/**
- * calculateFinalScore — Нийт эцсийн оноо (30 оноо = 100%)
- */
 function calculateFinalScore(mgmt, behav, cult, acad) {
-  // 4 ангилал нийлж 100 гэхэд нийт оноо нь 25+25+25+25 = 100%
-  // 30 оноо = 100% гэж хөрвүүлнэ: finalPoints = total / 100 * 30
-  const total = (mgmt || 0) + (behav || 0) + (cult || 0) + (acad || 0);
-  const points = parseFloat(((total / 100) * 30).toFixed(3));
-  return { total: parseFloat(total.toFixed(2)), points };
+  const points = shagnalPts2((mgmt || 0) + (behav || 0) + (cult || 0) + (acad || 0));
+  const total = shagnalPts2((points / SHAGNAL_SYSTEM_MAX) * 100);
+  return { total, points, grade: shagnalGradeLabel(total) };
+}
+
+function buildShagnalBreakdown(raw, N, inputs, degDays) {
+  const n = Math.max(1, N || 1);
+  const d = Math.max(1, degDays || 1);
+  const cleanRating = (raw.cleanRating > 0 ? raw.cleanRating : (inputs?.cleanRating || 3));
+  const activityAvg = (raw.activityTotal || 0) / d;
+  const hwAvg = (raw.hwSubmitted || 0) / d;
+  return {
+    mgmt: {
+      late: shagnalSubtract(SHAGNAL_MGMT_W, raw.late, n),
+      sick: shagnalSubtract(SHAGNAL_MGMT_W, raw.sick, n),
+      excused: shagnalSubtract(SHAGNAL_MGMT_W, raw.excused, n),
+      absent: shagnalSubtract(SHAGNAL_MGMT_W, raw.absent, n),
+    },
+    behav: {
+      phone: shagnalSubtract(SHAGNAL_BEHAV_W, raw.phone, n),
+      activity: shagnalAdd(SHAGNAL_BEHAV_W, activityAvg, n),
+      attitude: shagnalSubtract(SHAGNAL_BEHAV_W, raw.attitude, n),
+      activityAvg,
+    },
+    cult: {
+      clean: shagnalCleanRating(cleanRating, SHAGNAL_CULT_CLEAN_W),
+      uniform: shagnalSubtract(SHAGNAL_CULT_UNIFORM_W, raw.uniform, n),
+      hygiene: shagnalSubtract(SHAGNAL_CULT_HYGIENE_W, raw.hygiene, n),
+      cleanRating,
+    },
+    acad: {
+      homework: shagnalAdd(SHAGNAL_ACAD_W, hwAvg, n),
+      hwAvg,
+      days: d,
+    },
+  };
 }
 
 /** Дэг дэвтрийн бүртгэл + ирц → ангийн шагнал (Education-smartDUTY / ShagnalPage-тэй ижил) */
@@ -20499,11 +20669,30 @@ function computeShagnalClassScores(classId, degData, attendance, students, optio
   degDays = Math.max(1, degDays);
   const autoClean = cleanCnt > 0 ? cleanSum / cleanCnt : 0;
   const cleanRating = autoClean > 0 ? autoClean : inputs.cleanRating;
-  const avgActive = activityTotal / degDays;
-  const inactiveAuto = Math.max(0, N - avgActive);
+  const activityAvg = activityTotal / degDays;
 
+  const raw = {
+    late,
+    sick,
+    excused,
+    absent,
+    phone,
+    attitude,
+    inactive: Math.max(0, N - activityAvg),
+    inactiveRaw: activityTotal,
+    activityAvg,
+    uniform,
+    hygiene,
+    cleanRating,
+    cleanAuto: autoClean,
+    hwSubmitted: homework,
+    activityTotal,
+    degDays,
+  };
+
+  const breakdown = buildShagnalBreakdown(raw, N, inputs, degDays);
   const mgmt = calculateManagementScore(late, sick, excused, absent, N);
-  const behav = calculateBehaviorScore(phone, inactiveAuto, attitude, N);
+  const behav = calculateBehaviorScore(phone, activityAvg, attitude, N);
   const cult = calculateCultureScore(cleanRating, uniform, hygiene, N);
   const acad = calculateAcademicScore(homework, N, degDays);
   const final = calculateFinalScore(mgmt, behav, cult, acad);
@@ -20515,23 +20704,8 @@ function computeShagnalClassScores(classId, degData, attendance, students, optio
     cult,
     acad,
     final,
-    raw: {
-      late,
-      sick,
-      excused,
-      absent,
-      phone,
-      attitude,
-      inactive: inactiveAuto,
-      inactiveRaw: activityTotal,
-      uniform,
-      hygiene,
-      cleanRating,
-      cleanAuto: autoClean,
-      hwSubmitted: homework,
-      activityTotal,
-      degDays,
-    },
+    breakdown,
+    raw,
   };
 }
 
@@ -20593,34 +20767,34 @@ function ShagnalPage({ user }) {
   // ── Render ──────────────────────────────────────────────────────────────
   const catConfig = [
     { key:'mgmt',  label:'🏅 Шилдэг менежменттэй анги', color:'#2563eb', bg:'#eff6ff', border:'#93c5fd',
-      score: scores?.mgmt, max:25,
+      score: scores?.mgmt, max: SHAGNAL_CAT_MAX,
       criteria:[
-        {name:'Хоцорсон',   val: scores?.raw?.late,    weight:6.25, neg:true},
-        {name:'Өвчтэй',     val: scores?.raw?.sick,    weight:6.25, neg:true},
-        {name:'Чөлөөтэй',  val: scores?.raw?.excused, weight:6.25, neg:true},
-        {name:'Тасалсан',   val: scores?.raw?.absent,  weight:6.25, neg:true},
+        {name:'Хоцорсон',   val: scores?.raw?.late,    weight: SHAGNAL_MGMT_W, neg:true},
+        {name:'Өвчтэй',     val: scores?.raw?.sick,    weight: SHAGNAL_MGMT_W, neg:true},
+        {name:'Чөлөөтэй',  val: scores?.raw?.excused, weight: SHAGNAL_MGMT_W, neg:true},
+        {name:'Тасалсан',   val: scores?.raw?.absent,  weight: SHAGNAL_MGMT_W, neg:true},
       ],
     },
     { key:'behav', label:'🌟 Шилдэг төлөвшилтэй анги', color:'#7c3aed', bg:'#f5f3ff', border:'#c4b5fd',
-      score: scores?.behav, max:25,
+      score: scores?.behav, max: SHAGNAL_CAT_MAX,
       criteria:[
-        {name:'Гар утасны хэрэглээ',      val: scores?.raw?.phone,    weight:8.33, neg:true},
-        {name:'Хичээлийн идэвх оролцоо', val: scores?.raw?.inactive,  weight:8.33, neg:false},
-        {name:'Хандлага харилцаа',        val: scores?.raw?.attitude, weight:8.33, neg:true},
+        {name:'Гар утасны хэрэглээ',      val: scores?.raw?.phone,       weight: SHAGNAL_BEHAV_W, neg:true},
+        {name:'Хичээлийн идэвх оролцоо', val: scores?.raw?.activityAvg, weight: SHAGNAL_BEHAV_W, neg:false, isActive:true},
+        {name:'Хандлага харилцаа',        val: scores?.raw?.attitude,    weight: SHAGNAL_BEHAV_W, neg:true},
       ],
     },
     { key:'cult',  label:'🎨 Соёлч анги',               color:'#0f766e', bg:'#f0fdfa', border:'#99f6e4',
-      score: scores?.cult,  max:25,
+      score: scores?.cult,  max: SHAGNAL_CAT_MAX,
       criteria:[
-        {name:'Ангийн цэвэрлэгээ (1-5)',  val: scores?.raw?.cleanRating, weight:8.33, neg:false, isRating:true},
-        {name:'Дүрэмт хувцас',            val: scores?.raw?.uniform,     weight:8.33, neg:true},
-        {name:'Хувийн ариун цэвэр',        val: scores?.raw?.hygiene,     weight:8.33, neg:true},
+        {name:'Ангийн цэвэрлэгээ (1-5)',  val: scores?.raw?.cleanRating, weight: SHAGNAL_CULT_CLEAN_W, neg:false, isRating:true},
+        {name:'Дүрэмт хувцас',            val: scores?.raw?.uniform,     weight: SHAGNAL_CULT_UNIFORM_W, neg:true},
+        {name:'Хувийн ариун цэвэр',        val: scores?.raw?.hygiene,     weight: SHAGNAL_CULT_HYGIENE_W, neg:true},
       ],
     },
     { key:'acad',  label:'📚 Ухаалаг анги',              color:'#b45309', bg:'#fefce8', border:'#fde68a',
-      score: scores?.acad,  max:25,
+      score: scores?.acad,  max: SHAGNAL_CAT_MAX,
       criteria:[
-        {name:'Гэрийн даалгаврын биелэлт', val: scores?.raw?.hwSubmitted, weight:25, neg:false, isHW:true},
+        {name:'Гэрийн даалгаврын биелэлт', val: scores?.raw?.hwSubmitted, weight: SHAGNAL_ACAD_W, neg:false, isHW:true},
       ],
     },
   ];
@@ -20636,7 +20810,7 @@ function ShagnalPage({ user }) {
           <div>
             <h1 style={{fontWeight:800,fontSize:20,color:'#fff',margin:0}}>🏆 Ангийн Шагналын Систем</h1>
             <p style={{fontSize:12,color:'rgba(255,255,255,0.75)',marginTop:4,marginBottom:0}}>
-              Нийт 30 оноо = 100% · 4 ангилал тус бүр 25% · Дэг дэвтрийн өгөгдлөөс автоматаар тооцоологдоно
+              Нийт 30 оноо = 100% · төрөл бүр 7.5 оноо · N = ангийн сурагчийн тоо · Дэг дэвтрээс автоматаар
             </p>
           </div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -20742,7 +20916,7 @@ function ShagnalPage({ user }) {
             total: sc.final.total,
             points: sc.final.points,
           };
-        }).sort((a, b) => b.total - a.total);
+        }).sort((a, b) => b.points - a.points);
 
         const catCols = [
           {key:'mgmt', label:'🏅 Менежмент', color:'#2563eb', bg:'#eff6ff'},
@@ -20784,7 +20958,7 @@ function ShagnalPage({ user }) {
                     <th style={{...thBase,background:'#1e3a8a',color:'#fff',width:50}}>Сурагч</th>
                     {catCols.map(cat=>(
                       <th key={cat.key} style={{...thBase,background:cat.bg,color:cat.color,minWidth:100}}>
-                        {cat.label}<br/><span style={{fontWeight:400,fontSize:9,opacity:.7}}>/25%/</span>
+                        {cat.label}<br/><span style={{fontWeight:400,fontSize:9,opacity:.7}}>/7.5 оноо/</span>
                       </th>
                     ))}
                     <th style={{...thBase,background:'#0f172a',color:'#fbbf24',minWidth:90}}>
@@ -20810,10 +20984,10 @@ function ShagnalPage({ user }) {
                         <td style={{...tdBase,color:'#64748b'}}>{row.cN}</td>
                         {catCols.map(cat=>{
                           const v = row[cat.key]||0;
-                          const barW = Math.min(100,(v/25)*100);
+                          const barW = Math.min(100,(v/SHAGNAL_CAT_MAX)*100);
                           return (
                             <td key={cat.key} style={{...tdBase,background:idx%2===0?cat.bg+'66':cat.bg+'33'}}>
-                              <div style={{fontWeight:700,color:cat.color,fontSize:12}}>{v.toFixed(1)}%</div>
+                              <div style={{fontWeight:700,color:cat.color,fontSize:12}}>{v.toFixed(2)} оноо</div>
                               <div style={{height:5,background:'#e5e7eb',borderRadius:3,overflow:'hidden',margin:'3px 4px 0'}}>
                                 <div style={{width:barW+'%',height:'100%',background:cat.color,borderRadius:3,transition:'width 0.4s'}}/>
                               </div>
@@ -20850,17 +21024,17 @@ function ShagnalPage({ user }) {
                     ['🏆 АНГИУДЫН ШАГНАЛЫН ЖАГСААЛТ — '+periodLabel2],
                     ['Гаргасан огноо:',new Date().toLocaleDateString('mn-MN'),'Хугацаа:',periodLabel2],
                     [],
-                    ['Байр','Анги','Сурагч','🏅 Менежмент %','🌟 Төлөвшилт %','🎨 Соёлч %','📚 Ухаалаг %','🏆 Нийт %','Оноо /30-аас/'],
+                    ['Байр','Анги','Сурагч','🏅 Менежмент /7.5','🌟 Төлөвшилт /7.5','🎨 Соёлч /7.5','📚 Ухаалаг /7.5','🏆 Нийт %','Оноо /30-аас/'],
                   ];
                   allRows.forEach((row,idx)=>{
                     s1rows.push([
                       idx<3?medals2[idx]:String(idx+1),
                       canonicalMainClassDisplayName(row.c),
                       row.cN,
-                      row.mgmt.toFixed(1)+'%',
-                      row.behav.toFixed(1)+'%',
-                      row.cult.toFixed(1)+'%',
-                      row.acad.toFixed(1)+'%',
+                      row.mgmt.toFixed(2),
+                      row.behav.toFixed(2),
+                      row.cult.toFixed(2),
+                      row.acad.toFixed(2),
                       row.total.toFixed(1)+'%',
                       row.points.toFixed(2),
                     ]);
@@ -20878,20 +21052,20 @@ function ShagnalPage({ user }) {
                     ['АНГИЛАЛ ТУСБҮРИЙН ДЭЛГЭРЭНГҮЙ — '+periodLabel2],
                     [],
                     ['🏅 ХАМ ХАМГИЙН ӨНД — МЕНЕЖМЕНТТЭЙ АНГИ (ИРЦИЙН ДУНДАЖ)'],
-                    ['Байр','Анги','Оноо %'],
-                    ...[...allRows].sort((a,b)=>b.mgmt-a.mgmt).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.mgmt.toFixed(1)+'%']),
+                    ['Байр','Анги','Оноо /7.5'],
+                    ...[...allRows].sort((a,b)=>b.mgmt-a.mgmt).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.mgmt.toFixed(2)]),
                     [],
                     ['🌟 ХАМГИЙН ИДЭВХТЭЙ — ТӨЛӨВШИЛТТЭЙ АНГИ'],
-                    ['Байр','Анги','Оноо %'],
-                    ...[...allRows].sort((a,b)=>b.behav-a.behav).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.behav.toFixed(1)+'%']),
+                    ['Байр','Анги','Оноо /7.5'],
+                    ...[...allRows].sort((a,b)=>b.behav-a.behav).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.behav.toFixed(2)]),
                     [],
                     ['🎨 ХАМГИЙН СОЁЛЧ АНГИ'],
-                    ['Байр','Анги','Оноо %'],
-                    ...[...allRows].sort((a,b)=>b.cult-a.cult).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.cult.toFixed(1)+'%']),
+                    ['Байр','Анги','Оноо /7.5'],
+                    ...[...allRows].sort((a,b)=>b.cult-a.cult).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.cult.toFixed(2)]),
                     [],
                     ['📚 ХАМГИЙН УХААЛАГ АНГИ (ГЭРИЙН ДААЛГАВАР)'],
-                    ['Байр','Анги','Оноо %'],
-                    ...[...allRows].sort((a,b)=>b.acad-a.acad).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.acad.toFixed(1)+'%']),
+                    ['Байр','Анги','Оноо /7.5'],
+                    ...[...allRows].sort((a,b)=>b.acad-a.acad).slice(0,5).map((r,i)=>[i<3?medals2[i]:i+1+'.',canonicalMainClassDisplayName(r.c),r.acad.toFixed(2)]),
                   ];
                   const ws2=XLSX.utils.aoa_to_sheet(s2rows);
                   ws2['!cols']=[{wch:16},{wch:14},{wch:12}];
@@ -20922,10 +21096,10 @@ function ShagnalPage({ user }) {
                       <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;font-weight:800;font-size:13pt">${medal}</td>
                       <td style="padding:6px 10px;border:1px solid #e2e8f0;font-weight:800;font-size:12pt">${canonicalMainClassDisplayName(row.c)}</td>
                       <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center">${row.cN}</td>
-                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.mgmt};font-weight:700">${row.mgmt.toFixed(1)}%</td>
-                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.behav};font-weight:700">${row.behav.toFixed(1)}%</td>
-                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.cult};font-weight:700">${row.cult.toFixed(1)}%</td>
-                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.acad};font-weight:700">${row.acad.toFixed(1)}%</td>
+                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.mgmt};font-weight:700">${row.mgmt.toFixed(2)}</td>
+                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.behav};font-weight:700">${row.behav.toFixed(2)}</td>
+                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.cult};font-weight:700">${row.cult.toFixed(2)}</td>
+                      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${catColors.acad};font-weight:700">${row.acad.toFixed(2)}</td>
                       <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${totalColor};font-weight:800;font-size:13pt">${row.total.toFixed(1)}%</td>
                       <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;color:${totalColor};font-weight:800">${row.points.toFixed(2)}</td>
                     </tr>`;
@@ -20936,7 +21110,7 @@ function ShagnalPage({ user }) {
                     const rows3=sorted.map((r,i)=>`<tr>
                       <td style="padding:5px 10px;border:1px solid #e2e8f0;text-align:center;font-weight:800">${medals2[i]}</td>
                       <td style="padding:5px 10px;border:1px solid #e2e8f0;font-weight:700">${canonicalMainClassDisplayName(r.c)}</td>
-                      <td style="padding:5px 10px;border:1px solid #e2e8f0;text-align:center;color:${color};font-weight:700">${r[key].toFixed(1)}%</td>
+                      <td style="padding:5px 10px;border:1px solid #e2e8f0;text-align:center;color:${color};font-weight:700">${r[key].toFixed(2)} / 7.5</td>
                     </tr>`).join('');
                     return `<h3 style="color:${color};margin:14pt 0 4pt;font-size:12pt">${label}</h3>
                     <table style="border-collapse:collapse;width:60%;font-family:Arial;font-size:10pt">
@@ -20971,10 +21145,10 @@ function ShagnalPage({ user }) {
                       <th style="width:50px">#</th>
                       <th style="text-align:left">Анги</th>
                       <th>Сурагч</th>
-                      <th style="color:#93c5fd">🏅 Менежмент<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>
-                      <th style="color:#c4b5fd">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>
-                      <th style="color:#6ee7b7">🎨 Соёлч<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>
-                      <th style="color:#fde68a">📚 Ухаалаг<br/><span style="font-weight:400;font-size:8pt">/25%/</span></th>
+                      <th style="color:#93c5fd">🏅 Менежмент<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>
+                      <th style="color:#c4b5fd">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>
+                      <th style="color:#6ee7b7">🎨 Соёлч<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>
+                      <th style="color:#fde68a">📚 Ухаалаг<br/><span style="font-weight:400;font-size:8pt">/7.5 оноо/</span></th>
                       <th style="background:#0f172a;color:#fbbf24">🏆 Нийт %</th>
                       <th style="background:#0f172a;color:#fbbf24">Оноо /30/</th>
                     </tr></thead>
@@ -21026,10 +21200,10 @@ function ShagnalPage({ user }) {
                       <td style="text-align:center;font-weight:800;font-size:12pt;width:30pt">${medal}</td>
                       <td style="font-weight:800;font-size:11pt">${canonicalMainClassDisplayName(row.c)}</td>
                       <td style="text-align:center;color:#64748b">${row.cN}</td>
-                      <td style="text-align:center;color:#2563eb;font-weight:700">${row.mgmt.toFixed(1)}%</td>
-                      <td style="text-align:center;color:#7c3aed;font-weight:700">${row.behav.toFixed(1)}%</td>
-                      <td style="text-align:center;color:#0f766e;font-weight:700">${row.cult.toFixed(1)}%</td>
-                      <td style="text-align:center;color:#b45309;font-weight:700">${row.acad.toFixed(1)}%</td>
+                      <td style="text-align:center;color:#2563eb;font-weight:700">${row.mgmt.toFixed(2)}</td>
+                      <td style="text-align:center;color:#7c3aed;font-weight:700">${row.behav.toFixed(2)}</td>
+                      <td style="text-align:center;color:#0f766e;font-weight:700">${row.cult.toFixed(2)}</td>
+                      <td style="text-align:center;color:#b45309;font-weight:700">${row.acad.toFixed(2)}</td>
                       <td style="text-align:center;font-weight:800;font-size:12pt;color:${totalColor}">${row.total.toFixed(1)}%</td>
                       <td style="text-align:center;font-weight:800;color:${totalColor}">${row.points.toFixed(2)}</td>
                     </tr>`;
@@ -21040,7 +21214,7 @@ function ShagnalPage({ user }) {
                     const rows3=sorted.map((r,i)=>`<tr>
                       <td style="text-align:center;font-weight:800">${medals2[i]}</td>
                       <td style="font-weight:700">${canonicalMainClassDisplayName(r.c)}</td>
-                      <td style="text-align:center;color:${color};font-weight:700">${r[key].toFixed(1)}%</td>
+                      <td style="text-align:center;color:${color};font-weight:700">${r[key].toFixed(2)} / 7.5</td>
                     </tr>`).join('');
                     return `<div style="margin-bottom:10pt">
                       <div style="font-weight:800;font-size:10pt;color:${color};border-left:3px solid ${color};padding-left:6pt;margin-bottom:4pt">${label}</div>
@@ -21107,10 +21281,10 @@ function ShagnalPage({ user }) {
                         <th style="width:28pt">#</th>
                         <th class="left" style="width:52pt">Анги</th>
                         <th style="width:38pt">Сурагч</th>
-                        <th style="color:#93c5fd">🏅 Менежмент<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/25%/</span></th>
-                        <th style="color:#c4b5fd">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/25%/</span></th>
-                        <th style="color:#6ee7b7">🎨 Соёлч<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/25%/</span></th>
-                        <th style="color:#fde68a">📚 Ухаалаг<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/25%/</span></th>
+                        <th style="color:#93c5fd">🏅 Менежмент<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/7.5 оноо/</span></th>
+                        <th style="color:#c4b5fd">🌟 Төлөвшилт<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/7.5 оноо/</span></th>
+                        <th style="color:#6ee7b7">🎨 Соёлч<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/7.5 оноо/</span></th>
+                        <th style="color:#fde68a">📚 Ухаалаг<br/><span style="font-weight:400;font-size:7pt;opacity:.8">/7.5 оноо/</span></th>
                         <th style="background:#0f172a;color:#fbbf24;width:52pt">🏆 Нийт %</th>
                         <th style="background:#0f172a;color:#fbbf24;width:44pt">Оноо /30/</th>
                       </tr>
@@ -21186,36 +21360,37 @@ function ShagnalPage({ user }) {
                 <thead>
                   <tr>
                     <th style={{border:'1.5px solid #cbd5e1',padding:'7px 12px',background:'#f0f4ff',color:'#1e293b',fontWeight:700,fontSize:11,textAlign:'left',minWidth:160}}>Шалгуур</th>
-                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#eff6ff',color:'#2563eb',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🏅 Менежмент<br/><span style={{fontWeight:400,fontSize:9}}>/25%/</span></th>
-                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🌟 Төлөвшилт<br/><span style={{fontWeight:400,fontSize:9}}>/25%/</span></th>
-                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#f0fdfa',color:'#0f766e',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🎨 Соёлч<br/><span style={{fontWeight:400,fontSize:9}}>/25%/</span></th>
-                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#fefce8',color:'#b45309',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>📚 Ухаалаг<br/><span style={{fontWeight:400,fontSize:9}}>/25%/</span></th>
+                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#eff6ff',color:'#2563eb',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🏅 Менежмент<br/><span style={{fontWeight:400,fontSize:9}}>/7.5 оноо/</span></th>
+                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#f5f3ff',color:'#7c3aed',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🌟 Төлөвшилт<br/><span style={{fontWeight:400,fontSize:9}}>/7.5 оноо/</span></th>
+                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#f0fdfa',color:'#0f766e',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>🎨 Соёлч<br/><span style={{fontWeight:400,fontSize:9}}>/7.5 оноо/</span></th>
+                    <th style={{border:'1.5px solid #cbd5e1',padding:'7px 10px',background:'#fefce8',color:'#b45309',fontWeight:700,fontSize:11,textAlign:'center',minWidth:100}}>📚 Ухаалаг<br/><span style={{fontWeight:400,fontSize:9}}>/7.5 оноо/</span></th>
                   </tr>
                 </thead>
                 <tbody>
                   {/* Criteria rows */}
                   {[
-                    {row:'Хоцорсон',      cat:'mgmt',  val:scores.raw.late,           weight:6.25, neg:true},
-                    {row:'Өвчтэй',        cat:'mgmt',  val:scores.raw.sick,           weight:6.25, neg:true},
-                    {row:'Чөлөөтэй',     cat:'mgmt',  val:scores.raw.excused,        weight:6.25, neg:true},
-                    {row:'Тасалсан',      cat:'mgmt',  val:scores.raw.absent,         weight:6.25, neg:true},
-                    {row:'Гар утас',      cat:'behav', val:scores.raw.phone,          weight:8.33, neg:true},
-                    {row:'Идэвх оролцоо', cat:'behav', val:scores.raw.inactive,       weight:8.33, neg:false, isActive:true},
-                    {row:'Хандлага',      cat:'behav', val:scores.raw.attitude,       weight:8.33, neg:true},
-                    {row:'Цэвэрлэгээ',   cat:'cult',  val:scores.raw.cleanRating,    weight:8.33, isRating:true},
-                    {row:'Дүрэмт хувцас',cat:'cult',  val:scores.raw.uniform,        weight:8.33, neg:true},
-                    {row:'Ариун цэвэр',  cat:'cult',  val:scores.raw.hygiene,        weight:8.33, neg:true},
-                    {row:'Гэрийн даалгавар',cat:'uha', val:scores.raw.hwSubmitted,   weight:25,   isHW:true},
+                    {row:'Хоцорсон',      cat:'mgmt',  val:scores.raw.late,           weight: SHAGNAL_MGMT_W, neg:true},
+                    {row:'Өвчтэй',        cat:'mgmt',  val:scores.raw.sick,           weight: SHAGNAL_MGMT_W, neg:true},
+                    {row:'Чөлөөтэй',     cat:'mgmt',  val:scores.raw.excused,        weight: SHAGNAL_MGMT_W, neg:true},
+                    {row:'Тасалсан',      cat:'mgmt',  val:scores.raw.absent,         weight: SHAGNAL_MGMT_W, neg:true},
+                    {row:'Гар утас',      cat:'behav', val:scores.raw.phone,          weight: SHAGNAL_BEHAV_W, neg:true},
+                    {row:'Идэвх оролцоо', cat:'behav', val:scores.raw.activityAvg,    weight: SHAGNAL_BEHAV_W, neg:false, isActive:true},
+                    {row:'Хандлага',      cat:'behav', val:scores.raw.attitude,       weight: SHAGNAL_BEHAV_W, neg:true},
+                    {row:'Цэвэрлэгээ',   cat:'cult',  val:scores.raw.cleanRating,    weight: SHAGNAL_CULT_CLEAN_W, isRating:true},
+                    {row:'Дүрэмт хувцас',cat:'cult',  val:scores.raw.uniform,        weight: SHAGNAL_CULT_UNIFORM_W, neg:true},
+                    {row:'Ариун цэвэр',  cat:'cult',  val:scores.raw.hygiene,        weight: SHAGNAL_CULT_HYGIENE_W, neg:true},
+                    {row:'Гэрийн даалгавар',cat:'uha', val:scores.raw.hwSubmitted,   weight: SHAGNAL_ACAD_W,   isHW:true},
                   ].map((row,ri)=>{
                     const catColorMap={mgmt:'#2563eb',behav:'#7c3aed',cult:'#0f766e',uha:'#b45309'};
                     const catBgMap={mgmt:'#eff6ff',behav:'#f5f3ff',cult:'#f0fdfa',uha:'#fefce8'};
-                    const pps=row.weight/Math.max(1,N);
                     let crScore;
-                    if(row.isRating) crScore=((row.val||3)/5)*row.weight;
-                    else if(row.isHW) crScore=((row.val||0)/Math.max(1,N))*row.weight;
-                    else if(row.isActive) crScore=((Math.max(0,N-(row.val||0))/Math.max(1,N))*row.weight);
-                    else if(row.neg) crScore=Math.max(0,row.weight-pps*(row.val||0));
-                    else crScore=0;
+                    if(row.isRating) crScore = shagnalCleanRating(row.val || 3, row.weight);
+                    else if(row.isHW) {
+                      const hwAvg = (row.val || 0) / Math.max(1, scores.raw.degDays || 1);
+                      crScore = shagnalAdd(row.weight, hwAvg, N);
+                    } else if(row.isActive) crScore = shagnalAdd(row.weight, row.val || 0, N);
+                    else if(row.neg) crScore = shagnalSubtract(row.weight, row.val || 0, N);
+                    else crScore = 0;
                     const crPct=(crScore/row.weight)*100;
                     const cats=['mgmt','behav','cult','uha'];
                     const bg=ri%2===0?'#fff':'#f8fafc';
@@ -21228,12 +21403,12 @@ function ShagnalPage({ user }) {
                           const cbg=catBgMap[cat];
                           return (
                             <td key={cat} style={{border:'1.5px solid #e2e8f0',padding:'5px 8px',background:cbg,textAlign:'center',verticalAlign:'middle'}}>
-                              <div style={{fontWeight:700,color,fontSize:12}}>{crScore.toFixed(2)}%</div>
+                              <div style={{fontWeight:700,color,fontSize:12}}>{crScore.toFixed(2)} оноо</div>
                               <div style={{height:5,background:'#e5e7eb',borderRadius:3,overflow:'hidden',margin:'3px 6px 0'}}>
                                 <div style={{width:crPct+'%',height:'100%',background:color,borderRadius:3,transition:'width 0.4s'}}/>
                               </div>
                               <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>
-                                {row.isRating?`${typeof row.val==='number'?row.val.toFixed(1):row.val}/5 (авт)`:row.isHW?`${row.val||0}/${N}`:row.isActive?`${Math.max(0,N-(row.val||0)).toFixed(1)}/${N} идэвхтэй`:`Зөрчил: ${row.val||0}`}
+                                {row.isRating?`${typeof row.val==='number'?row.val.toFixed(1):row.val}/5 (авт)`:row.isHW?`дундаж ${((row.val||0)/Math.max(1,scores.raw.degDays)).toFixed(1)}/${N}`:row.isActive?`${(row.val||0).toFixed(1)}/${N} идэвх/өдөр`:`Зөрчил: ${row.val||0}`}
                               </div>
                             </td>
                           );
@@ -21245,14 +21420,14 @@ function ShagnalPage({ user }) {
                   <tr style={{background:'#f0f4ff',borderTop:'2px solid #93c5fd'}}>
                     <td style={{border:'1.5px solid #cbd5e1',padding:'7px 12px',fontWeight:800,color:'#1e293b',fontSize:12}}>📊 Дэд нийт</td>
                     {[
-                      {score:scores.mgmt,color:'#2563eb',max:25},
-                      {score:scores.behav,color:'#7c3aed',max:25},
-                      {score:scores.cult,color:'#0f766e',max:25},
-                      {score:scores.acad,color:'#b45309',max:25},
+                      {score:scores.mgmt,color:'#2563eb',max: SHAGNAL_CAT_MAX},
+                      {score:scores.behav,color:'#7c3aed',max: SHAGNAL_CAT_MAX},
+                      {score:scores.cult,color:'#0f766e',max: SHAGNAL_CAT_MAX},
+                      {score:scores.acad,color:'#b45309',max: SHAGNAL_CAT_MAX},
                     ].map((s,i)=>(
                       <td key={i} style={{border:'1.5px solid #cbd5e1',padding:'7px 8px',textAlign:'center',fontWeight:800,color:s.color,fontSize:13}}>
-                        {s.score?.toFixed(2)||'0'}%
-                        <div style={{fontSize:9,color:'#94a3b8',fontWeight:400}}>/{s.max}%/</div>
+                        {s.score?.toFixed(2)||'0'} / {s.max}
+                        <div style={{fontSize:9,color:'#94a3b8',fontWeight:400}}>({shagnalCatPct(s.score||0).toFixed(1)}%)</div>
                       </td>
                     ))}
                   </tr>
@@ -21263,8 +21438,8 @@ function ShagnalPage({ user }) {
                       <span style={{fontWeight:900,fontSize:18,color:'#fbbf24'}}>{scores.final.total.toFixed(1)}%</span>
                       <span style={{color:'rgba(255,255,255,0.6)',marginLeft:12,fontSize:12}}>→</span>
                       <span style={{fontWeight:900,fontSize:18,color:'#fff',marginLeft:8}}>{scores.final.points.toFixed(2)} / 30 оноо</span>
-                      <span style={{marginLeft:12,fontSize:12,color:scores.final.total>=80?'#4ade80':scores.final.total>=60?'#fbbf24':'#f87171',fontWeight:700}}>
-                        {scores.final.total>=80?'✅ Маш сайн':scores.final.total>=60?'⚡ Дундаж':'⚠️ Сайжруулах шаардлагатай'}
+                      <span style={{marginLeft:12,fontSize:12,color:scores.final.total>=90?'#4ade80':scores.final.total>=75?'#93c5fd':scores.final.total>=50?'#fbbf24':'#f87171',fontWeight:700}}>
+                        {scores.final.grade}
                       </span>
                     </td>
                   </tr>
@@ -21313,7 +21488,7 @@ function ShagnalPage({ user }) {
                   <label style={{display:'flex',flexDirection:'column',gap:4}}>
                     <span style={{fontSize:12,fontWeight:600,color:'#374151'}}>
                       Ангийн цэвэрлэгээ (1–5 оноо)
-                      <span style={{color:'#94a3b8',marginLeft:6}}>→ Формула: (оноо/5) × 8.33%</span>
+                      <span style={{color:'#94a3b8',marginLeft:6}}>→ {SHAGNAL_CULT_CLEAN_W} × (оноо/5)</span>
                     </span>
                     <div style={{display:'flex',alignItems:'center',gap:10}}>
                       <input type="range" min={1} max={5} step={1}
@@ -21325,7 +21500,7 @@ function ShagnalPage({ user }) {
                       </span>
                     </div>
                     <div style={{fontSize:11,color:'#6b7280'}}>
-                      → {(((inputs.cleanRating)/5)*8.33).toFixed(2)}% / 8.33%
+                      → {shagnalCleanRating(inputs.cleanRating, SHAGNAL_CULT_CLEAN_W).toFixed(2)} / {SHAGNAL_CULT_CLEAN_W} оноо
                     </div>
                   </label>
                   {[
@@ -21335,7 +21510,7 @@ function ShagnalPage({ user }) {
                     <label key={f.key} style={{display:'flex',flexDirection:'column',gap:4}}>
                       <span style={{fontSize:12,fontWeight:600,color:'#374151'}}>
                         {f.label}
-                        <span style={{color:'#94a3b8',marginLeft:6}}>→ Суутгал: {N>0?(8.33/N).toFixed(3):0} / сурагч</span>
+                        <span style={{color:'#94a3b8',marginLeft:6}}>→ Суутгал: {N>0?(SHAGNAL_CULT_UNIFORM_W/N).toFixed(3):0} / зөрчил</span>
                       </span>
                       <input type="number" min={0} max={N||50} value={inputs[f.key]}
                         onChange={e=>setInputs(p=>({...p,[f.key]:Math.max(0,+e.target.value)}))}
@@ -21347,23 +21522,17 @@ function ShagnalPage({ user }) {
                 </div>
               </div>
 
-              {/* Төлөвшил — Идэвхгүй */}
+              {/* Төлөвшил — Идэвх (дэг дэвтрээс) */}
               <div>
                 <div style={{fontWeight:700,fontSize:13,color:'#7c3aed',marginBottom:10,
                   padding:'6px 12px',background:'#f5f3ff',borderRadius:8}}>
                   🌟 Шилдэг төлөвшилтэй анги
                 </div>
-                <label style={{display:'flex',flexDirection:'column',gap:4}}>
-                  <span style={{fontSize:12,fontWeight:600,color:'#374151'}}>
-                    Хичээлд идэвхгүй оролцсон сурагч тоо
-                    <span style={{color:'#94a3b8',marginLeft:6}}>→ Идэвхтэй: {Math.max(0,N-inputs.inactive)}/{N}</span>
-                  </span>
-                  <input type="number" min={0} max={N||50} value={inputs.inactive}
-                    onChange={e=>setInputs(p=>({...p,inactive:Math.max(0,+e.target.value)}))}
-                    style={{padding:'8px 12px',borderRadius:8,border:'2px solid #e5e7eb',
-                      fontSize:13,outline:'none',width:'100%',fontWeight:600}}
-                    placeholder="Идэвхгүй сурагч тоо"/>
-                </label>
+                <div style={{padding:'8px 12px',borderRadius:8,border:'2px solid #c4b5fd',
+                  fontSize:13,fontWeight:600,background:'#faf5ff',color:'#6d28d9'}}>
+                  📊 Өдрийн дундаж идэвх: {(scores?.raw?.activityAvg||0).toFixed(1)} / {N} сурагч
+                  <span style={{color:'#94a3b8',marginLeft:6,fontWeight:400}}>· Дэг дэвтрээс автоматаар</span>
+                </div>
               </div>
 
               {/* Ухаалаг — Гэрийн даалгавар */}
@@ -21379,9 +21548,9 @@ function ShagnalPage({ user }) {
                   </span>
                   <div style={{padding:'8px 12px',borderRadius:8,border:'2px solid #86efac',
                     fontSize:13,fontWeight:700,background:'#f0fdf4',color:'#15803d'}}>
-                    📖 {scores?.raw?.hwSubmitted||0} сурагч биелүүлсэн / {N} нийт
-                    &nbsp;→&nbsp; {N>0?(((scores?.raw?.hwSubmitted||0)/N)*100).toFixed(1):0}%
-                    &nbsp;→&nbsp; {(((scores?.raw?.hwSubmitted||0)/Math.max(1,N))*25).toFixed(2)}% оноо
+                    📖 Нийт {scores?.raw?.hwSubmitted||0} бүртгэл · {scores?.raw?.degDays||1} өдөр
+                    &nbsp;→&nbsp; m = {((scores?.raw?.hwSubmitted||0)/Math.max(1,scores?.raw?.degDays||1)).toFixed(1)}/{N}
+                    &nbsp;→&nbsp; {scores?.acad?.toFixed(2)||0} / {SHAGNAL_ACAD_W} оноо
                   </div>
                 </label>
               </div>
@@ -21439,22 +21608,20 @@ function ShagnalPage({ user }) {
                 borderRadius:12,padding:'12px 16px'}}>
                 <div style={{fontWeight:800,fontSize:13,color:'#15803d',marginBottom:6}}>📐 Оноо тооцооллын аргачлал</div>
                 <div style={{fontSize:11,color:'#166534',lineHeight:1.7}}>
-                  Нийт <b>30 оноо = 100%</b> · 4 ангилал тус бүр <b>25%</b> · 
-                  Ангилал бүр <b>7.5 оноотой</b> · N = {N} сурагч
+                  Нийт <b>30 оноо = 100%</b> · төрөл бүр <b>7.5 оноо</b> · N = <b>{N}</b> сурагч
                 </div>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,marginTop:10}}>
                   {[
-                    {icon:'🏅',label:'Шилдэг менежменттэй',score:scores.mgmt,color:'#2563eb',bg:'#eff6ff',pts:(scores.mgmt/100*30*0.25*4).toFixed(2)},
-                    {icon:'🌟',label:'Шилдэг төлөвшилтэй',score:scores.behav,color:'#7c3aed',bg:'#f5f3ff',pts:(scores.behav/100*30*0.25*4).toFixed(2)},
-                    {icon:'🎨',label:'Соёлч',score:scores.cult,color:'#0f766e',bg:'#f0fdfa',pts:(scores.cult/100*30*0.25*4).toFixed(2)},
-                    {icon:'📚',label:'Ухаалаг',score:scores.acad,color:'#b45309',bg:'#fefce8',pts:(scores.acad/100*30*0.25*4).toFixed(2)},
+                    {icon:'🏅',label:'Менежмент',pts:scores.mgmt,color:'#2563eb',bg:'#eff6ff'},
+                    {icon:'🌟',label:'Төлөвшилт',pts:scores.behav,color:'#7c3aed',bg:'#f5f3ff'},
+                    {icon:'🎨',label:'Соёлч',pts:scores.cult,color:'#0f766e',bg:'#f0fdfa'},
+                    {icon:'📚',label:'Ухаалаг',pts:scores.acad,color:'#b45309',bg:'#fefce8'},
                   ].map((cat,i)=>(
                     <div key={i} style={{background:cat.bg,borderRadius:10,padding:'8px 10px',textAlign:'center',border:`1.5px solid ${cat.color}30`}}>
                       <div style={{fontSize:14,marginBottom:2}}>{cat.icon}</div>
                       <div style={{fontSize:9,fontWeight:700,color:cat.color,lineHeight:1.3,marginBottom:4}}>{cat.label}</div>
-                      <div style={{fontWeight:900,fontSize:16,color:cat.color}}>{cat.score.toFixed(1)}%</div>
-                      <div style={{fontSize:10,color:'#64748b',marginTop:1}}>7.5 оноооос</div>
-                      <div style={{fontWeight:800,fontSize:13,color:cat.color}}>{(cat.score/25*7.5).toFixed(2)} оноо</div>
+                      <div style={{fontWeight:900,fontSize:16,color:cat.color}}>{cat.pts.toFixed(2)} оноо</div>
+                      <div style={{fontSize:10,color:'#64748b',marginTop:1}}>{shagnalCatPct(cat.pts).toFixed(1)}% / 7.5</div>
                     </div>
                   ))}
                 </div>
@@ -21467,7 +21634,7 @@ function ShagnalPage({ user }) {
                   <span style={{fontWeight:800,fontSize:13,color:'#1d4ed8'}}>🏅 Шилдэг менежменттэй анги</span>
                   <span style={{fontWeight:800,fontSize:13,color:'#2563eb',background:'white',
                     padding:'3px 10px',borderRadius:8,border:'1.5px solid #93c5fd'}}>
-                    {scores.mgmt.toFixed(2)}% / 25% → {(scores.mgmt/25*7.5).toFixed(2)} оноо
+                    {scores.mgmt.toFixed(2)} / 7.50 оноо ({shagnalCatPct(scores.mgmt).toFixed(1)}%)
                   </span>
                 </div>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
@@ -21482,22 +21649,21 @@ function ShagnalPage({ user }) {
                   </thead>
                   <tbody>
                     {[
-                      {name:'Хоцорсон',val:scores.raw.late},
-                      {name:'Өвчтэй',val:scores.raw.sick},
-                      {name:'Чөлөөтэй',val:scores.raw.excused},
-                      {name:'Тасалсан',val:scores.raw.absent},
+                      {name:'Хоцорсон',val:scores.raw.late,key:'late'},
+                      {name:'Өвчтэй',val:scores.raw.sick,key:'sick'},
+                      {name:'Чөлөөтэй',val:scores.raw.excused,key:'excused'},
+                      {name:'Тасалсан',val:scores.raw.absent,key:'absent'},
                     ].map((r,i)=>{
-                      const pen=(6.25/Math.max(1,N));
-                      const sc=Math.max(0,6.25-pen*r.val);
-                      const pct=(sc/6.25)*100;
+                      const sc=scores.breakdown.mgmt[r.key];
+                      const pct=(sc/SHAGNAL_MGMT_W)*100;
                       return (
                         <tr key={i} style={{background:i%2===0?'#fff':'#f8faff',borderBottom:'1px solid #e0e7ff'}}>
                           <td style={{padding:'7px 12px',fontWeight:600,color:'#374151'}}>{r.name}</td>
                           <td style={{padding:'7px 10px',textAlign:'center',color:'#dc2626',fontWeight:700}}>{r.val}</td>
                           <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>
-                            6.25 − ({r.val}/{N} × 6.25)
+                            {SHAGNAL_MGMT_W} − ({r.val}/{N} × {SHAGNAL_MGMT_W})
                           </td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#2563eb'}}>{sc.toFixed(3)}%</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#2563eb'}}>{sc.toFixed(2)} оноо</td>
                           <td style={{padding:'7px 12px',minWidth:80}}>
                             <div style={{height:6,background:'#dbeafe',borderRadius:3,overflow:'hidden'}}>
                               <div style={{width:pct+'%',height:'100%',background:'#2563eb',borderRadius:3,transition:'width 0.4s'}}/>
@@ -21508,8 +21674,8 @@ function ShagnalPage({ user }) {
                     })}
                     <tr style={{background:'#eff6ff',borderTop:'2px solid #93c5fd'}}>
                       <td colSpan={3} style={{padding:'7px 12px',fontWeight:800,color:'#1d4ed8'}}>📊 Нийт дүн</td>
-                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#1d4ed8',fontSize:14}}>{scores.mgmt.toFixed(2)}%</td>
-                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/{25}%/</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#1d4ed8',fontSize:14}}>{scores.mgmt.toFixed(2)} оноо</td>
+                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/7.50/</td>
                     </tr>
                   </tbody>
                 </table>
@@ -21522,7 +21688,7 @@ function ShagnalPage({ user }) {
                   <span style={{fontWeight:800,fontSize:13,color:'#6d28d9'}}>🌟 Шилдэг төлөвшилтэй анги</span>
                   <span style={{fontWeight:800,fontSize:13,color:'#7c3aed',background:'white',
                     padding:'3px 10px',borderRadius:8,border:'1.5px solid #c4b5fd'}}>
-                    {scores.behav.toFixed(2)}% / 25% → {(scores.behav/25*7.5).toFixed(2)} оноо
+                    {scores.behav.toFixed(2)} / 7.50 оноо ({shagnalCatPct(scores.behav).toFixed(1)}%)
                   </span>
                 </div>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
@@ -21537,23 +21703,22 @@ function ShagnalPage({ user }) {
                   </thead>
                   <tbody>
                     {[
-                      {name:'Гар утасны хэрэглээ',val:scores.raw.phone,neg:true,
-                        formula:`8.33 − (${scores.raw.phone}/${N} × 8.33)`,
-                        sc:Math.max(0,8.33-(8.33/Math.max(1,N))*scores.raw.phone)},
-                      {name:'Хичээлийн идэвх оролцоо',val:+(Math.max(0,N-scores.raw.inactive)).toFixed(1),neg:false,
-                        formula:`8.33 × (${+(Math.max(0,N-scores.raw.inactive)).toFixed(1)}/${N}) [авт: ${scores.raw.inactiveRaw}/${scores.raw.degDays}өдөр]`,
-                        sc:((Math.max(0,N-scores.raw.inactive)/Math.max(1,N))*8.33)},
-                      {name:'Хандлага харилцаа',val:scores.raw.attitude,neg:true,
-                        formula:`8.33 − (${scores.raw.attitude}/${N} × 8.33)`,
-                        sc:Math.max(0,8.33-(8.33/Math.max(1,N))*scores.raw.attitude)},
+                      {name:'Гар утасны хэрэглээ',val:scores.raw.phone,key:'phone',neg:true},
+                      {name:'Хичээлийн идэвх оролцоо',val:+scores.raw.activityAvg.toFixed(1),key:'activity',neg:false},
+                      {name:'Хандлага харилцаа',val:scores.raw.attitude,key:'attitude',neg:true},
                     ].map((r,i)=>{
-                      const pct=(r.sc/8.33)*100;
+                      const sc=scores.breakdown.behav[r.key];
+                      const w=SHAGNAL_BEHAV_W;
+                      const formula=r.key==='activity'
+                        ? `${w} × (${scores.raw.activityAvg.toFixed(1)}/${N})`
+                        : `${w} − (${r.val}/${N} × ${w})`;
+                      const pct=(sc/w)*100;
                       return (
                         <tr key={i} style={{background:i%2===0?'#fff':'#faf8ff',borderBottom:'1px solid #e8e0ff'}}>
                           <td style={{padding:'7px 12px',fontWeight:600,color:'#374151'}}>{r.name}</td>
                           <td style={{padding:'7px 10px',textAlign:'center',color:r.neg?'#dc2626':'#16a34a',fontWeight:700}}>{r.val}</td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>{r.formula}</td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#7c3aed'}}>{r.sc.toFixed(3)}%</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>{formula}</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#7c3aed'}}>{sc.toFixed(2)} оноо</td>
                           <td style={{padding:'7px 12px',minWidth:80}}>
                             <div style={{height:6,background:'#ede9fe',borderRadius:3,overflow:'hidden'}}>
                               <div style={{width:pct+'%',height:'100%',background:'#7c3aed',borderRadius:3,transition:'width 0.4s'}}/>
@@ -21564,8 +21729,8 @@ function ShagnalPage({ user }) {
                     })}
                     <tr style={{background:'#f5f3ff',borderTop:'2px solid #c4b5fd'}}>
                       <td colSpan={3} style={{padding:'7px 12px',fontWeight:800,color:'#6d28d9'}}>📊 Нийт дүн</td>
-                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#6d28d9',fontSize:14}}>{scores.behav.toFixed(2)}%</td>
-                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/{25}%/</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#6d28d9',fontSize:14}}>{scores.behav.toFixed(2)} оноо</td>
+                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/7.50/</td>
                     </tr>
                   </tbody>
                 </table>
@@ -21578,7 +21743,7 @@ function ShagnalPage({ user }) {
                   <span style={{fontWeight:800,fontSize:13,color:'#0f766e'}}>🎨 Соёлч анги</span>
                   <span style={{fontWeight:800,fontSize:13,color:'#0f766e',background:'white',
                     padding:'3px 10px',borderRadius:8,border:'1.5px solid #99f6e4'}}>
-                    {scores.cult.toFixed(2)}% / 25% → {(scores.cult/25*7.5).toFixed(2)} оноо
+                    {scores.cult.toFixed(2)} / 7.50 оноо ({shagnalCatPct(scores.cult).toFixed(1)}%)
                   </span>
                 </div>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
@@ -21593,26 +21758,24 @@ function ShagnalPage({ user }) {
                   </thead>
                   <tbody>
                     {[
-                      {name:'Ангийн цэвэрлэгээ /1-5 оноо/',
+                      {name:'Ангийн цэвэрлэгээ /1-5/',
                         val:`${scores.raw.cleanRating.toFixed(1)}/5${scores.raw.cleanAuto>0?' (авт)':' (гараар)'}`,
-                        formula:`8.33 × (${scores.raw.cleanRating.toFixed(1)}/5)`,
-                        sc:((scores.raw.cleanRating||3)/5)*8.33,isRating:true},
-                      {name:'Дүрэмт хувцас',
-                        val:scores.raw.uniform,
-                        formula:`8.33 − (${scores.raw.uniform}/${N} × 8.33)`,
-                        sc:Math.max(0,8.33-(8.33/Math.max(1,N))*scores.raw.uniform)},
-                      {name:'Хувийн ариун цэвэр',
-                        val:scores.raw.hygiene,
-                        formula:`8.33 − (${scores.raw.hygiene}/${N} × 8.33)`,
-                        sc:Math.max(0,8.33-(8.33/Math.max(1,N))*scores.raw.hygiene)},
+                        key:'clean',isRating:true},
+                      {name:'Дүрэмт хувцас',val:scores.raw.uniform,key:'uniform'},
+                      {name:'Хувийн ариун цэвэр',val:scores.raw.hygiene,key:'hygiene'},
                     ].map((r,i)=>{
-                      const pct=(r.sc/8.33)*100;
+                      const sc=scores.breakdown.cult[r.key];
+                      const w=r.key==='clean'?SHAGNAL_CULT_CLEAN_W:r.key==='uniform'?SHAGNAL_CULT_UNIFORM_W:SHAGNAL_CULT_HYGIENE_W;
+                      const formula=r.isRating
+                        ? `${SHAGNAL_CULT_CLEAN_W} × (${scores.raw.cleanRating.toFixed(1)}/5)`
+                        : `${w} − (${r.val}/${N} × ${w})`;
+                      const pct=(sc/w)*100;
                       return (
                         <tr key={i} style={{background:i%2===0?'#fff':'#f0fdf9',borderBottom:'1px solid #d1fae5'}}>
                           <td style={{padding:'7px 12px',fontWeight:600,color:'#374151'}}>{r.name}</td>
                           <td style={{padding:'7px 10px',textAlign:'center',color:r.isRating?'#0f766e':'#dc2626',fontWeight:700}}>{r.val}</td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>{r.formula}</td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#0f766e'}}>{r.sc.toFixed(3)}%</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>{formula}</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#0f766e'}}>{sc.toFixed(2)} оноо</td>
                           <td style={{padding:'7px 12px',minWidth:80}}>
                             <div style={{height:6,background:'#ccfbf1',borderRadius:3,overflow:'hidden'}}>
                               <div style={{width:pct+'%',height:'100%',background:'#0f766e',borderRadius:3,transition:'width 0.4s'}}/>
@@ -21623,8 +21786,8 @@ function ShagnalPage({ user }) {
                     })}
                     <tr style={{background:'#f0fdfa',borderTop:'2px solid #99f6e4'}}>
                       <td colSpan={3} style={{padding:'7px 12px',fontWeight:800,color:'#0f766e'}}>📊 Нийт дүн</td>
-                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#0f766e',fontSize:14}}>{scores.cult.toFixed(2)}%</td>
-                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/{25}%/</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#0f766e',fontSize:14}}>{scores.cult.toFixed(2)} оноо</td>
+                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/7.50/</td>
                     </tr>
                   </tbody>
                 </table>
@@ -21637,7 +21800,7 @@ function ShagnalPage({ user }) {
                   <span style={{fontWeight:800,fontSize:13,color:'#92400e'}}>📚 Ухаалаг анги</span>
                   <span style={{fontWeight:800,fontSize:13,color:'#b45309',background:'white',
                     padding:'3px 10px',borderRadius:8,border:'1.5px solid #fde68a'}}>
-                    {scores.acad.toFixed(2)}% / 25% → {(scores.acad/25*7.5).toFixed(2)} оноо
+                    {scores.acad.toFixed(2)} / 7.50 оноо ({shagnalCatPct(scores.acad).toFixed(1)}%)
                   </span>
                 </div>
                 <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
@@ -21652,19 +21815,19 @@ function ShagnalPage({ user }) {
                   </thead>
                   <tbody>
                     {(()=>{
-                      const days=getDegDays();
+                      const days=Math.max(1, scores.raw.degDays||1);
                       const hw=scores.raw.hwSubmitted||0;
-                      const rate=Math.min(1,hw/(Math.max(1,days)*Math.max(1,N)));
-                      const sc=rate*25;
-                      const pct=(sc/25)*100;
+                      const mAvg=hw/days;
+                      const sc=scores.breakdown.acad.homework;
+                      const pct=(sc/SHAGNAL_ACAD_W)*100;
                       return (
                         <tr style={{background:'#fff',borderBottom:'1px solid #fef08a'}}>
-                          <td style={{padding:'7px 12px',fontWeight:600,color:'#374151'}}>Гэрийн даалгаврын биелэлт /улавч/</td>
-                          <td style={{padding:'7px 10px',textAlign:'center',color:'#16a34a',fontWeight:700}}>{hw}/{N}×{days}өдөр</td>
+                          <td style={{padding:'7px 12px',fontWeight:600,color:'#374151'}}>Гэрийн даалгаврын биелэлт /өдрийн дундаж/</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',color:'#16a34a',fontWeight:700}}>m={mAvg.toFixed(1)}/{N} · {hw} бүртгэл/{days}өдөр</td>
                           <td style={{padding:'7px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontFamily:'monospace'}}>
-                            25 × ({hw}÷({days}×{N}))
+                            {SHAGNAL_ACAD_W} × ({mAvg.toFixed(1)}/{N})
                           </td>
-                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#b45309'}}>{sc.toFixed(3)}%</td>
+                          <td style={{padding:'7px 10px',textAlign:'center',fontWeight:800,color:'#b45309'}}>{sc.toFixed(2)} оноо</td>
                           <td style={{padding:'7px 12px',minWidth:80}}>
                             <div style={{height:6,background:'#fef9c3',borderRadius:3,overflow:'hidden'}}>
                               <div style={{width:pct+'%',height:'100%',background:'#b45309',borderRadius:3,transition:'width 0.4s'}}/>
@@ -21675,8 +21838,8 @@ function ShagnalPage({ user }) {
                     })()}
                     <tr style={{background:'#fefce8',borderTop:'2px solid #fde68a'}}>
                       <td colSpan={3} style={{padding:'7px 12px',fontWeight:800,color:'#92400e'}}>📊 Нийт дүн</td>
-                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#92400e',fontSize:14}}>{scores.acad.toFixed(2)}%</td>
-                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/{25}%/</td>
+                      <td style={{padding:'7px 10px',textAlign:'center',fontWeight:900,color:'#92400e',fontSize:14}}>{scores.acad.toFixed(2)} оноо</td>
+                      <td style={{padding:'7px 12px',fontSize:10,color:'#64748b'}}>/7.50/</td>
                     </tr>
                   </tbody>
                 </table>
@@ -21688,15 +21851,15 @@ function ShagnalPage({ user }) {
                   <div>
                     <div style={{fontWeight:800,fontSize:14,color:'#fbbf24',marginBottom:4}}>🏆 Нийт эцсийн оноо</div>
                     <div style={{fontSize:11,color:'rgba(255,255,255,0.6)'}}>
-                      ({scores.mgmt.toFixed(2)} + {scores.behav.toFixed(2)} + {scores.cult.toFixed(2)} + {scores.acad.toFixed(2)}) ÷ 100 × 30
+                      {scores.mgmt.toFixed(2)} + {scores.behav.toFixed(2)} + {scores.cult.toFixed(2)} + {scores.acad.toFixed(2)} = {scores.final.points.toFixed(2)} / 30 оноо
                     </div>
                   </div>
                   <div style={{textAlign:'right'}}>
                     <div style={{fontWeight:900,fontSize:26,color:'#fbbf24'}}>{scores.final.total.toFixed(1)}%</div>
                     <div style={{fontWeight:900,fontSize:20,color:'white'}}>{scores.final.points.toFixed(2)} / 30 оноо</div>
                     <div style={{marginTop:4,fontSize:12,fontWeight:700,
-                      color:scores.final.total>=80?'#4ade80':scores.final.total>=60?'#fbbf24':'#f87171'}}>
-                      {scores.final.total>=80?'✅ Маш сайн':scores.final.total>=60?'⚡ Дундаж':'⚠️ Сайжруулах шаардлагатай'}
+                      color:scores.final.total>=90?'#4ade80':scores.final.total>=75?'#93c5fd':scores.final.total>=50?'#fbbf24':'#f87171'}}>
+                      {scores.final.grade}
                     </div>
                   </div>
                 </div>
@@ -22588,6 +22751,7 @@ function App() {
   // бичих бүрт website дээр шууд харагдана.
   // ══════════════════════════════════════════════════════════════════════════════
   React.useEffect(() => {
+    if (SMARTDUTY_MANUAL_ATTENDANCE_ONLY) return;
     const start = () => {
       const rtdb = window.__rtdb;
       if (!rtdb) { console.warn('[RTDB Att Sync] rtdb not available'); return; }
@@ -22746,7 +22910,9 @@ function App() {
       case 'setup': return <SetupPage user={effectiveUser}/>;
       case 'admin-settings': return <AdminSettingsPage user={effectiveUser} onLogout={()=>{ window.__currentSchoolId = null; setUser(null); }} onUserUpdate={(u)=>setUser(u)}/>;
       case 'teacher-settings': return <TeacherSettingsPage user={effectiveUser} onLogout={()=>{ window.__currentSchoolId = null; setUser(null); }} onUserUpdate={(u)=>setUser(u)}/>;
-      case 'fingerprint': return <FingerprintPage user={effectiveUser}/>;
+      case 'fingerprint': return SMARTDUTY_MANUAL_ATTENDANCE_ONLY
+        ? <ManualAttendanceOnlyNotice title="Хурууны хээ / Arduino идэвхгүй" />
+        : <FingerprintPage user={effectiveUser}/>;
       case 'shagnalpage': return <ShagnalPage user={effectiveUser}/>;
       default: return (
         <div style={{padding:32,textAlign:'center',maxWidth:520,margin:'0 auto'}}>
