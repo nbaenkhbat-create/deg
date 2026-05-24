@@ -10,7 +10,7 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b11';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b12';</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -2356,32 +2356,37 @@ function mergeTeacherLoginAccountLists(localList, remoteList) {
   return out;
 }
 
-/** Firestore + localStorage — багшийн нууц үгийн жагсаалт (нэвтрэхээс өмнө дуудна) */
+/** Firestore + localStorage — багшийн нууц үг (утас QR: үргэлж сервертэй нэгтгэнэ) */
 async function ensureTeacherLoginAccountsLoaded(schoolIdOverride) {
-  const sid = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
-  let local = loadTeacherLoginAccounts(sid);
-  if (local.length) return local;
+  const sidRaw = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  const sidSlug = sidRaw ? (schoolIdHelpers.toSlug(sidRaw) || sidRaw) : '';
+  let local = loadTeacherLoginAccounts(sidSlug);
   await ensureFirebaseAuthForTeacherPortal();
   try {
-    let fromFs = await readSchoolIrtsDataCompat(TEACHER_LOGIN_LS, sid);
-    if (!Array.isArray(fromFs)) fromFs = await fsGet(TEACHER_LOGIN_LS, null, sid || undefined);
-    if (Array.isArray(fromFs)) {
+    let fromFs = await readSchoolIrtsDataCompat(TEACHER_LOGIN_LS, sidSlug);
+    if (!Array.isArray(fromFs)) fromFs = await fsGet(TEACHER_LOGIN_LS, null, sidSlug || undefined);
+    if (Array.isArray(fromFs) && fromFs.length) {
       local = mergeTeacherLoginAccountLists(local, fromFs);
-      try {
-        localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local));
-        if (sid) localStorage.setItem(teacherLoginAccountsCacheKey(sid), JSON.stringify(local));
-      } catch (_) {}
     }
   } catch (e) {
     console.warn('[teacher-login] Firestore load', e);
   }
+  try {
+    localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(local));
+    if (sidSlug) localStorage.setItem(teacherLoginAccountsCacheKey(sidSlug), JSON.stringify(local));
+  } catch (_) {}
   return local;
 }
 
-async function saveTeacherLoginAccounts(list) {
+async function saveTeacherLoginAccounts(list, schoolIdOverride) {
   const arr = Array.isArray(list) ? list : [];
+  const sidRaw = String(schoolIdOverride || getCurrentSchoolId() || schoolIdHelpers.load() || '').trim();
+  const sidSlug = sidRaw ? (schoolIdHelpers.toSlug(sidRaw) || sidRaw) : '';
   try { localStorage.setItem(TEACHER_LOGIN_LS, JSON.stringify(arr)); } catch (_) {}
-  await fsSet(TEACHER_LOGIN_LS, arr);
+  if (sidSlug) {
+    try { localStorage.setItem(teacherLoginAccountsCacheKey(sidSlug), JSON.stringify(arr)); } catch (_) {}
+  }
+  await fsSet(TEACHER_LOGIN_LS, arr, sidSlug || undefined);
   return arr;
 }
 
@@ -2391,8 +2396,9 @@ async function upsertTeacherLoginAccount(cardName, password, extra) {
   if (!name || pw.length < 6) {
     throw new Error('Нууц үг дор хаяж 6 тэмдэгт байх ёстой');
   }
-  await ensureTeacherLoginAccountsLoaded();
-  const list = loadTeacherLoginAccounts();
+  const sid = getCurrentSchoolId() || schoolIdHelpers.load() || '';
+  await ensureTeacherLoginAccountsLoaded(sid);
+  const list = loadTeacherLoginAccounts(sid);
   const idx = list.findIndex((a) => scheduleNamesMatch(a.loginName, name));
   const row = {
     loginName: name,
@@ -2404,7 +2410,7 @@ async function upsertTeacherLoginAccount(cardName, password, extra) {
   };
   if (idx >= 0) list[idx] = { ...list[idx], ...row };
   else list.push({ id: 'tlog_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), ...row });
-  await saveTeacherLoginAccounts(list);
+  await saveTeacherLoginAccounts(list, sid);
   return row;
 }
 
@@ -2596,11 +2602,25 @@ function filterTeacherAccountsByQrClass(accounts, password, className, published
   if (!pw || pw.length < 6 || !cls) return [];
   const list = Array.isArray(accounts) ? accounts : [];
   const hasSchedule = !!(published?.teachers?.length);
-  return list.filter((a) => {
-    if (String(a.password || '').trim() !== pw) return false;
+  const pwMatches = list.filter((a) => String(a.password || '').trim() === pw);
+  if (!pwMatches.length) return [];
+
+  const bySchedule = pwMatches.filter((a) => {
     if (!hasSchedule) return true;
     return accountTeachesClassForQr(a, cls, published);
   });
+  if (bySchedule.length) return bySchedule;
+
+  // Хуваарь дээр анги олдохгүй ч бүртгэлийн homeroom QR ангитай таарвал зөвшөөрнө
+  const byHomeroom = pwMatches.filter((a) => {
+    const hr = String(a.homeroom || '').trim();
+    if (!hr) return false;
+    const fake = { name: cls };
+    return normClassLabelKey(hr) === normClassLabelKey(cls) || scheduleCellMatchesClass(hr, fake);
+  });
+  if (byHomeroom.length) return byHomeroom;
+
+  return [];
 }
 
 /** QR анги + нууц үг → тухайн ангид заадаг багшийн бүртгэл */
@@ -4239,7 +4259,11 @@ function LoginPage({ onLogin }) {
   const pBg    = isQrFlow
     ? 'linear-gradient(160deg,#052e16 0%,#14532d 45%,#166534 100%)'
     : (isTeacherPortal ? 'linear-gradient(135deg,#1e1b4b 0%,#4f46e5 50%,#7c3aed 100%)' : 'linear-gradient(135deg,#042f2e 0%,#0f766e 50%,#059669 100%)');
-  const qrLoginReady = !!(qrMatchedTeacher && (qrMatchedTeacher.loginName || qrMatchedTeacher.displayName));
+  const qrLoginReady = !!(
+    qrMatchedTeacher
+    && (qrMatchedTeacher.loginName || qrMatchedTeacher.displayName)
+    && (qrMatchCandidates.length <= 1 || qrMatchCandidates.some((c) => scheduleNamesMatch(c.loginName, qrMatchedTeacher.loginName)))
+  );
 
   return (
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:pBg}}>
