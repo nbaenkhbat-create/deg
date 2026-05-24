@@ -10,7 +10,7 @@
     <meta http-equiv="Expires" content="0">
     <title>SDZB-DJN SYSTEM</title>
     <!-- GitHub Pages cache шалгах: Console → window.__SMARTDUTY_BUILD -->
-    <script>window.__SMARTDUTY_BUILD='2026-05-23-b17';</script>
+    <script>window.__SMARTDUTY_BUILD='2026-05-23-b18';</script>
     <script>window.SMARTDUTY_MANUAL_ATTENDANCE_ONLY = true;</script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -19234,6 +19234,108 @@ function TopBar({ user, page, navs, onOpenNav }) {
   );
 }
 
+function resolveTeacherExportPassword(name, pwDrafts, loginAccounts, pendingPassword) {
+  const key = String(name || '').trim();
+  if (!key) return '';
+  const direct = String((pwDrafts && pwDrafts[key]) || '').trim();
+  if (direct.length >= 6) return direct;
+  const draftKey = Object.keys(pwDrafts || {}).find((k) => scheduleNamesMatch(k, key));
+  if (draftKey) {
+    const via = String(pwDrafts[draftKey] || '').trim();
+    if (via.length >= 6) return via;
+  }
+  const acc = (loginAccounts || []).find((a) => scheduleNamesMatch(a.loginName, key));
+  const fromAcc = String(acc?.password || '').trim();
+  if (fromAcc.length >= 6) return fromAcc;
+  const pend = String(pendingPassword || '').trim();
+  if (pend.length >= 6) return pend;
+  return direct || fromAcc || pend || '';
+}
+
+function buildTeacherPasswordExportRows(rosterRows, pwDrafts, loginAccounts, publishedLesson, teacherInfoMap) {
+  const rows = [];
+  const seen = new Set();
+  const pushRow = (name, extra) => {
+    const n = String(name || '').trim();
+    if (!n) return;
+    const seenKey = n.toLowerCase();
+    if (seen.has(seenKey)) return;
+    seen.add(seenKey);
+    const teachClasses = getTeacherScheduleClassLabels(n, publishedLesson);
+    const homeroom = String(extra?.homeroom || '').trim();
+    const subjectId = String(extra?.subject || '').trim();
+    const subj = SUBJECTS.find((s) => s.id === subjectId);
+    const subjectLabel = subj ? `${subj.icon} ${subj.label}` : subjectId;
+    const email = teacherInfoMap?.[n]?.email || extra?.email || '';
+    const pw = resolveTeacherExportPassword(n, pwDrafts, loginAccounts, extra?.pendingPassword);
+    let status = 'Эрхгүй';
+    if (extra?.isActive) status = 'Идэвхтэй';
+    else if (extra?.isPending) status = 'Хүлээгдэж буй';
+    rows.push({
+      name: n,
+      password: pw,
+      homeroom,
+      subject: subjectLabel,
+      classes: teachClasses.join(', '),
+      email,
+      status,
+    });
+  };
+  (rosterRows || []).forEach((row) => {
+    const t = row.schedule || {};
+    const n = (t.name || '').trim();
+    pushRow(n, {
+      homeroom: t.homeroom || '',
+      subject: t.subject || '',
+      email: teacherInfoMap?.[n]?.email || row.active?.email || row.pending?.email || '',
+      pendingPassword: row.pending?.password,
+      isActive: !!row.active,
+      isPending: !!row.pending && !row.active,
+    });
+  });
+  (loginAccounts || []).forEach((a) => {
+    pushRow(a.loginName || a.displayName, {
+      homeroom: a.homeroom || '',
+      subject: a.subject || '',
+      pendingPassword: a.password,
+    });
+  });
+  rows.sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), 'mn', { numeric: true, sensitivity: 'base' })
+  );
+  return rows;
+}
+
+function downloadTeacherPasswordsExcelFile(exportRows, schoolId) {
+  if (typeof XLSX === 'undefined') {
+    alert('Excel сан ачаалагдаагүй байна. Хуудсыг дахин ачаална уу.');
+    return;
+  }
+  const aoa = [
+    ['№', 'Багшийн нэр', 'Нууц үг', 'Хариуцсан анги', 'Хичээл', 'Заадаг ангиуд', 'Имэйл', 'Төлөв'],
+    ...exportRows.map((r, i) => [
+      i + 1,
+      r.name,
+      r.password || '(оруулаагүй)',
+      r.homeroom || '',
+      r.subject || '',
+      r.classes || '',
+      r.email || '',
+      r.status || '',
+    ]),
+  ];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [
+    { wch: 5 }, { wch: 30 }, { wch: 18 }, { wch: 14 },
+    { wch: 24 }, { wch: 40 }, { wch: 30 }, { wch: 16 },
+  ];
+  XLSX.utils.book_append_sheet(wb, ws, 'Багш нууц үг');
+  const date = todayStr();
+  const sid = String(schoolId || 'school').replace(/[^\w\-]+/g, '_').slice(0, 40);
+  XLSX.writeFile(wb, `bagsh_nuuts_ug_${sid}_${date}.xlsx`);
+}
+
 function TeachersManagement({ user }) {
   const [teachers,        setTeachers]        = React.useState([]);
   const [pendingTeachers, setPendingTeachers] = React.useState([]);
@@ -19261,6 +19363,7 @@ function TeachersManagement({ user }) {
   });
   const [pwSavingKey, setPwSavingKey] = React.useState('');
   const [pwSavedAt, setPwSavedAt] = React.useState({});
+  const [pwExportLoading, setPwExportLoading] = React.useState(false);
   const updatePwDraftLocal = (next) => {
     setPwDrafts(next);
     try { localStorage.setItem('irts_schedule_teacher_pw', JSON.stringify(next)); } catch (_) {}
@@ -19632,6 +19735,32 @@ function TeachersManagement({ user }) {
   const pendingInRoster = rosterRows.filter((r) => r.pending && !r.active).length;
   const activeInRoster = rosterRows.filter((r) => r.active).length;
 
+  const handleDownloadPasswordsExcel = async () => {
+    if (pwExportLoading) return;
+    setPwExportLoading(true);
+    try {
+      const accounts = await ensureTeacherLoginAccountsLoaded(schoolId);
+      const exportRows = buildTeacherPasswordExportRows(
+        rosterRows, pwDrafts, accounts, publishedLesson, teacherInfoMap
+      );
+      if (!exportRows.length) {
+        alert('⚠️ Татаж авах багш байхгүй. Эхлээд хуваарь нийтлэх эсвэл багш нэмнэ үү.');
+        return;
+      }
+      const missing = exportRows.filter((r) => !r.password || r.password.length < 6).length;
+      downloadTeacherPasswordsExcelFile(exportRows, schoolId);
+      setSuccessMsg(
+        `📥 Excel татагдлаа (${exportRows.length} багш)` +
+        (missing ? ` · ${missing} мөрөнд нууц үг ороогүй` : '')
+      );
+      setTimeout(() => setSuccessMsg(''), 8000);
+    } catch (e) {
+      alert('Excel татахад алдаа: ' + (e.message || e));
+    } finally {
+      setPwExportLoading(false);
+    }
+  };
+
   const handleGrantAllPending = async () => {
     if (grantAllLoading) return;
     const list = filteredPending.slice();
@@ -19672,6 +19801,19 @@ function TeachersManagement({ user }) {
             </p>
           </div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button
+              type="button"
+              disabled={pwExportLoading || rosterCount === 0}
+              onClick={handleDownloadPasswordsExcel}
+              title="Багшийн нэр + нууц үгийг Excel файл болгон татна"
+              style={{
+                padding:'9px 18px',borderRadius:10,border:'2px solid #86efac',cursor:(pwExportLoading||rosterCount===0)?'not-allowed':'pointer',
+                fontSize:13,fontWeight:700,background:'#f0fdf4',color:'#15803d',
+                opacity:(pwExportLoading||rosterCount===0)?0.55:1,
+              }}
+            >
+              {pwExportLoading ? '⏳ Татаж байна...' : '📥 Excel (нэр + нууц үг)'}
+            </button>
             <button onClick={()=>{setShowAddForm(!showAddForm);setAddErrors({});setNewTeacher({email:'',name:'',phone:'',subject:'',password:''});}}
               style={{padding:'9px 18px',borderRadius:10,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                 background:showAddForm?'#f1f5f9':'#2563eb',color:showAddForm?'#374151':'#fff'}}>
